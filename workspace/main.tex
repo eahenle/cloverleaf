@@ -1,0 +1,22 @@
+\documentclass[11pt]{article}
+
+\title{Cloverleaf}
+\author{A local-first writing environment}
+\date{}
+
+\begin{document}
+\maketitle
+
+\input{sections/introduction}
+
+\newpage
+\section{A focused authoring loop}
+
+Cloverleaf keeps the project tree, source editor, compiled document, and manuscript assistant visible at the same time. Saving and compilation happen independently, so a quick sequence of edits is coalesced into a final build without overlapping compiler processes.
+
+\newpage
+\section{Local by design}
+
+Project files remain on this machine. The backend validates workspace paths, invokes the compiler without a shell, and keeps provider credentials out of browser requests. The example is intentionally long enough to exercise multipage preview behavior.
+
+\end{document}

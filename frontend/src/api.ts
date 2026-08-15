@@ -1,0 +1,65 @@
+import type {
+  AssistantContext,
+  AssistantResponse,
+  ChatMessage,
+  CompileStatus,
+  FileContent,
+  TreeNode,
+} from './types'
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, { cache: 'no-store', ...init })
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`
+    try {
+      const payload = (await response.json()) as { detail?: string }
+      if (payload.detail) detail = payload.detail
+    } catch {
+      // Keep the HTTP status when the server did not return JSON.
+    }
+    throw new Error(detail)
+  }
+  if (response.status === 204) return undefined as T
+  return (await response.json()) as T
+}
+
+function encodePath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/')
+}
+
+export const api = {
+  health: () => request<{ ok: boolean }>('/api/health'),
+  tree: () => request<TreeNode[]>('/api/project/tree'),
+  read: (path: string) => request<FileContent>(`/api/files/${encodePath(path)}`),
+  write: (path: string, content: string) =>
+    request<FileContent>(`/api/files/${encodePath(path)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, content }),
+    }),
+  create: (path: string, type: 'file' | 'directory') =>
+    request<{ ok: boolean }>('/api/files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, type }),
+    }),
+  rename: (path: string, newPath: string) =>
+    request<{ ok: boolean }>('/api/files', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, new_path: newPath }),
+    }),
+  delete: (path: string) =>
+    request<void>(`/api/files/${encodePath(path)}`, { method: 'DELETE' }),
+  compile: () => request<CompileStatus>('/api/compile', { method: 'POST' }),
+  compileStatus: () => request<CompileStatus>('/api/compile/status'),
+  chat: (messages: ChatMessage[], context: AssistantContext) =>
+    request<AssistantResponse>('/api/assistant/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: messages.map(({ role, content }) => ({ role, content })),
+        context,
+      }),
+    }),
+}
