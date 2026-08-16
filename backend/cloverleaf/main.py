@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -31,7 +31,7 @@ from .models import (
     ProjectInfo,
     RenameEntry,
 )
-from .workspace import Workspace, WorkspaceError
+from .workspace import FileChangedError, Workspace, WorkspaceError
 
 
 logger = logging.getLogger(__name__)
@@ -278,10 +278,43 @@ def create_app(
                 application.state.assistant = application.state.assistant.for_workspace(candidate)
         return project_info()
 
+    @application.websocket("/api/file-events/{path:path}")
+    async def watch_file(socket: WebSocket, path: str):
+        fs = workspace()
+        try:
+            fs.resolve(path, must_exist=True)
+        except Exception as exc:
+            await socket.close(code=1008, reason=str(translate_error(exc).detail))
+            return
+
+        await socket.accept()
+        last_version: str | None = None
+        try:
+            while True:
+                try:
+                    content, version = fs.read_versioned(path)
+                    if version != last_version:
+                        payload = FileContent(path=path, content=content, version=version)
+                        await socket.send_json(payload.model_dump())
+                        last_version = version
+                except FileNotFoundError:
+                    await socket.send_json({"path": path, "deleted": True})
+                    await socket.close(code=1000)
+                    return
+                except FileChangedError:
+                    pass
+                try:
+                    await asyncio.wait_for(socket.receive_text(), timeout=1)
+                except TimeoutError:
+                    pass
+        except WebSocketDisconnect:
+            return
+
     @application.get("/api/files/{path:path}", response_model=FileContent)
     async def get_file(path: str, fs: Workspace = Depends(workspace)):
         try:
-            return FileContent(path=path, content=fs.read(path))
+            content, version = fs.read_versioned(path)
+            return FileContent(path=path, content=content, version=version)
         except Exception as exc:
             raise translate_error(exc) from exc
 
@@ -290,8 +323,8 @@ def create_app(
         if body.path != path:
             raise HTTPException(status_code=400, detail="Body path does not match URL")
         try:
-            fs.write(path, body.content)
-            return body
+            version = fs.write(path, body.content, body.version)
+            return FileContent(path=path, content=body.content, version=version)
         except Exception as exc:
             raise translate_error(exc) from exc
 
@@ -372,6 +405,8 @@ def create_app(
 
 
 def translate_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, FileChangedError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, (WorkspaceError, IsADirectoryError, NotADirectoryError)):
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, FileNotFoundError):

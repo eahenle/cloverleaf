@@ -32,6 +32,8 @@ CLOVERLEAF_MAIN_FILE=paper.tex
 
 While Cloverleaf is running, use **Load project** (the open-folder button in the Project panel) to switch to another local manuscript. The modal folder picker navigates the server's local filesystem with Up, Home, and Computer shortcuts and offers the selected folder's `.tex` files as compilation roots—no path entry is required. If the folder has no root-level `.tex` file, Cloverleaf creates a minimal `main.tex` automatically. The backend validates the selection before switching, waits for any active build to finish, clears project-specific editor and assistant state, and compiles the loaded manuscript. The selection is saved in the ignored `.cloverleaf-project.json` state file and restored after backend restarts or development reloads. Set `CLOVERLEAF_PROJECT_STATE` to move that state file, or remove it to return to the `.env` default.
 
+Project folders start collapsed so large research repositories remain fast and scannable. Cloverleaf watches the open file over one WebSocket connection: clean external edits reload automatically, while a conflicting external edit pauses autosave and preserves the unsaved editor text for review.
+
 ## Codex assistant
 
 Authenticate the installed Codex CLI before starting Cloverleaf:
@@ -105,7 +107,7 @@ docs/architecture.md Trust boundaries and component design
 
 Every file API path is resolved beneath the configured workspace. Absolute paths, traversal (including encoded and backslash forms), symlinks, dotfiles, and LaTeX build artifacts are rejected. `latexmk` is invoked without a shell and without enabling shell escape. Generated artifacts do not appear in the project tree.
 
-Cloverleaf binds only to localhost by default. TeX itself is not sandboxed, so compile only manuscripts you trust. This MVP has no authentication, collaboration, database, Git synchronization, multi-project picker, or production static-file serving.
+Cloverleaf binds only to localhost by default. TeX itself is not sandboxed, so compile only manuscripts you trust. This MVP has no authentication, collaboration, database, Git synchronization, or production static-file serving.
 
 ## Production frontend build
 

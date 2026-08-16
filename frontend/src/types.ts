@@ -8,6 +8,7 @@ export type TreeNode = {
 export type FileContent = {
   path: string
   content: string
+  version?: string | null
 }
 
 export type ProjectInfo = {

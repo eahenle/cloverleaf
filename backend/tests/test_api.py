@@ -38,6 +38,20 @@ def test_file_api_lifecycle(tmp_path: Path) -> None:
         assert client.delete("/api/files/notes").status_code == 204
 
 
+def test_file_api_rejects_stale_editor_write(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        opened = client.get("/api/files/main.tex").json()
+        (tmp_path / "workspace" / "main.tex").write_text("external", encoding="utf-8")
+        response = client.put(
+            "/api/files/main.tex",
+            json={**opened, "content": "stale editor"},
+        )
+
+        assert response.status_code == 409
+        assert "changed on disk" in response.json()["detail"]
+        assert (tmp_path / "workspace" / "main.tex").read_text(encoding="utf-8") == "external"
+
+
 def test_encoded_and_backslash_traversal_are_rejected(tmp_path: Path) -> None:
     (tmp_path / "secret.tex").write_text("secret", encoding="utf-8")
     with make_client(tmp_path) as client:

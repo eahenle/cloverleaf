@@ -61,6 +61,7 @@ test('authenticated Codex uses manuscript context and gates proposed edits', asy
     )
     expect(selected).toContain('Local by design')
 
+    await page.getByLabel('Expand sections').click()
     await page.getByRole('button', { name: 'introduction.tex', exact: true }).click()
     await expect(page.locator('.project-path')).toContainText('sections/introduction.tex')
     await expect(page.locator('.cm-content')).toContainText('Overleaf-inspired')

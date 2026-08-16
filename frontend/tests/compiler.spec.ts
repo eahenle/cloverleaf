@@ -35,7 +35,10 @@ test('compiler failures retain the last preview and recover cleanly', async ({ p
     await page.goto('/')
     await waitForState(request, 'success')
     await expect(page.getByTestId('pdf-page')).toHaveCount(3, { timeout: 30_000 })
+    await page.getByLabel('Expand sections').click()
     await page.getByRole('button', { name: 'introduction.tex', exact: true }).click()
+    await expect(page.locator('.project-path')).toContainText('sections/introduction.tex')
+    await expect(page.locator('.cm-content')).toContainText('Overleaf-inspired')
 
     await replaceEditor(page, '\\section{Welcome}\n\n\\cloverleafUndefinedCommand\n')
     let failed = await waitForState(request, 'error')

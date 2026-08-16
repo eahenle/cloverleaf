@@ -37,6 +37,9 @@ export default function App() {
   const pathRef = useRef(path)
   const contentRef = useRef(content)
   const dirtyRef = useRef(dirty)
+  const fileVersionRef = useRef<string | null>(null)
+  const syncedContentRef = useRef('')
+  const externalWarningVersionRef = useRef<string | null>(null)
   const editVersionRef = useRef(0)
   const saveCountRef = useRef(0)
   const toastTimerRef = useRef<number | null>(null)
@@ -80,8 +83,13 @@ export default function App() {
     saveCountRef.current += 1
     setSaving(true)
     try {
-      await api.write(targetPath, snapshot)
-      if (pathRef.current === targetPath && editVersionRef.current === version) updateDirty(false)
+      const saved = await api.write(targetPath, snapshot, fileVersionRef.current)
+      if (pathRef.current === targetPath) {
+        fileVersionRef.current = saved.version ?? null
+        syncedContentRef.current = snapshot
+        externalWarningVersionRef.current = null
+        if (editVersionRef.current === version) updateDirty(false)
+      }
       if (requestCompile) setStatus(await api.compile())
     } finally {
       saveCountRef.current -= 1
@@ -94,6 +102,9 @@ export default function App() {
     if (dirtyRef.current) await saveCurrent(true)
     setEditIntent(null)
     const file = await api.read(nextPath)
+    fileVersionRef.current = file.version ?? null
+    syncedContentRef.current = file.content
+    externalWarningVersionRef.current = null
     updatePath(file.path)
     updateContent(file.content)
     updateDirty(false)
@@ -157,6 +168,48 @@ export default function App() {
   }, [showError, status.state])
 
   useEffect(() => {
+    if (!path) return
+    let active = true
+    const observedPath = path
+    const stop = api.watch(
+      observedPath,
+      (file) => {
+        if (!active || switchingProjectRef.current || pathRef.current !== observedPath) return
+        const nextVersion = file.version ?? null
+        const unchanged = nextVersion !== null && nextVersion === fileVersionRef.current
+        if (unchanged || (nextVersion === null && file.content === syncedContentRef.current)) return
+        if (dirtyRef.current || saveCountRef.current > 0) {
+          setEditIntent(null)
+          if (externalWarningVersionRef.current !== nextVersion) {
+            externalWarningVersionRef.current = nextVersion
+            showError(`${observedPath} changed on disk. Autosave is paused; your editor content was kept.`)
+          }
+          return
+        }
+        fileVersionRef.current = nextVersion
+        syncedContentRef.current = file.content
+        externalWarningVersionRef.current = null
+        updateContent(file.content)
+        setSelectedText('')
+        if (/\.(tex|bib|sty|cls)$/i.test(observedPath)) {
+          void requestCompile().catch(showError)
+        }
+      },
+      () => {
+        if (!active || pathRef.current !== observedPath) return
+        setEditIntent(null)
+        updateDirty(true)
+        showError(`${observedPath} was removed on disk. Cloverleaf kept the editor content.`)
+      },
+      () => undefined,
+    )
+    return () => {
+      active = false
+      stop()
+    }
+  }, [path, project?.workspace, requestCompile, showError, updateContent, updateDirty])
+
+  useEffect(() => {
     if (initializedRef.current) return
     initializedRef.current = true
     void (async () => {
@@ -196,6 +249,9 @@ export default function App() {
       const loaded = await api.loadProject(workspace, mainFile)
       const nextTree = await api.tree()
       const file = await api.read(loaded.main_file)
+      fileVersionRef.current = file.version ?? null
+      syncedContentRef.current = file.content
+      externalWarningVersionRef.current = null
       setProject(loaded)
       setTree(nextTree)
       updatePath(file.path)
@@ -236,6 +292,9 @@ export default function App() {
       if (activePath === target || activePath?.startsWith(`${target}/`)) {
         setEditIntent(null)
         updatePath(null)
+        fileVersionRef.current = null
+        syncedContentRef.current = ''
+        externalWarningVersionRef.current = null
         updateContent('')
         updateDirty(false)
         setSelectedText('')
@@ -272,9 +331,16 @@ export default function App() {
     try {
       if (dirtyRef.current && pathRef.current !== edit.path) await saveCurrent(false)
       setEditIntent(null)
-      await api.write(edit.path, edit.content)
+      const saved = await api.write(
+        edit.path,
+        edit.content,
+        pathRef.current === edit.path ? fileVersionRef.current : null,
+      )
       await refreshTree()
       updatePath(edit.path)
+      fileVersionRef.current = saved.version ?? null
+      syncedContentRef.current = edit.content
+      externalWarningVersionRef.current = null
       updateContent(edit.content)
       updateDirty(false)
       setSelectedText('')
@@ -302,6 +368,7 @@ export default function App() {
           <PanelGroup direction="vertical" autoSaveId="cloverleaf-left">
             <Panel defaultSize={67} minSize={32}>
               <FileTree
+                key={project?.workspace ?? 'no-project'}
                 tree={tree}
                 activePath={path}
                 onOpen={(nextPath) => void openFile(nextPath).catch(showError)}

@@ -15,6 +15,7 @@ class TreeNode(BaseModel):
 class FileContent(BaseModel):
     path: str
     content: str
+    version: str | None = None
 
 
 class CreateEntry(BaseModel):

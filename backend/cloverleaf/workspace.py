@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -25,6 +26,10 @@ WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
 
 
 class WorkspaceError(ValueError):
+    pass
+
+
+class FileChangedError(RuntimeError):
     pass
 
 
@@ -100,20 +105,39 @@ class Workspace:
         return visit(self.root)
 
     def read(self, path: str) -> str:
+        content, _version = self.read_versioned(path)
+        return content
+
+    def read_versioned(self, path: str) -> tuple[str, str]:
         target = self.resolve(path, must_exist=True)
         if not target.is_file():
             raise IsADirectoryError(path)
         try:
-            return target.read_text(encoding="utf-8")
+            for _attempt in range(2):
+                before = target.stat().st_mtime_ns
+                content = target.read_text(encoding="utf-8")
+                after = target.stat().st_mtime_ns
+                if before == after:
+                    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+            raise FileChangedError(f"{path} changed while Cloverleaf was reading it")
         except UnicodeDecodeError as exc:
             raise WorkspaceError("Only UTF-8 text files can be opened") from exc
 
-    def write(self, path: str, content: str) -> None:
+    def write(self, path: str, content: str, expected_version: str | None = None) -> str:
         target = self.resolve(path)
         if target.exists() and target.is_dir():
             raise IsADirectoryError(path)
+        if expected_version is not None:
+            if (
+                not target.exists()
+                or hashlib.sha256(target.read_bytes()).hexdigest() != expected_version
+            ):
+                raise FileChangedError(
+                    f"{path} changed on disk; Cloverleaf kept the unsaved editor content"
+                )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def create(self, path: str, entry_type: str, content: str = "") -> None:
         target = self.resolve(path)

@@ -44,11 +44,29 @@ export const api = {
     }),
   tree: () => request<TreeNode[]>('/api/project/tree'),
   read: (path: string) => request<FileContent>(`/api/files/${encodePath(path)}`),
-  write: (path: string, content: string) =>
+  watch: (
+    path: string,
+    onChange: (file: FileContent) => void,
+    onDelete: () => void,
+    onError: () => void,
+  ) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(
+      `${protocol}//${window.location.host}/api/file-events/${encodePath(path)}`,
+    )
+    socket.onmessage = (event) => {
+      const payload = JSON.parse(String(event.data)) as FileContent & { deleted?: boolean }
+      if (payload.deleted) onDelete()
+      else onChange(payload)
+    }
+    socket.onerror = onError
+    return () => socket.close(1000)
+  },
+  write: (path: string, content: string, version?: string | null) =>
     request<FileContent>(`/api/files/${encodePath(path)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, content }),
+      body: JSON.stringify({ path, content, version }),
     }),
   create: (path: string, type: 'file' | 'directory') =>
     request<{ ok: boolean }>('/api/files', {

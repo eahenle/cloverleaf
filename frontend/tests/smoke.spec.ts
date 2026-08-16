@@ -79,6 +79,7 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       const after = await divider.boundingBox()
       expect(Math.abs(after!.x - before!.x)).toBeGreaterThan(25)
 
+      await page.getByLabel('Expand sections').click()
       await page.getByRole('button', { name: 'introduction.tex', exact: true }).click()
       await expect(page.locator('.project-path')).toContainText('sections/introduction.tex')
       const editor = page.locator('.cm-content')
@@ -167,6 +168,7 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       await page.getByLabel('Create folder').click()
       await createFolderDialog
       await expect(page.getByRole('button', { name: 'live-check', exact: true })).toBeVisible()
+      await page.getByLabel('Expand live-check').click()
 
       const cancelDialog = acceptNextDialog(page)
       await page.getByLabel('Create file').click()
@@ -215,6 +217,78 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       await expect(page.getByRole('button', { name: 'live-check', exact: true })).toHaveCount(0)
     } finally {
       await request.delete('/api/files/live-check').catch(() => undefined)
+    }
+  })
+
+  test('large nested trees expand incrementally', async ({ page, request }) => {
+    await request.post('/api/files', { data: { path: 'tree-scale/one/two', type: 'directory' } })
+    await request.post('/api/files', {
+      data: { path: 'tree-scale/one/two/deep.tex', type: 'file' },
+    })
+    try {
+      await page.goto('/')
+      await expect(page.getByRole('button', { name: 'tree-scale', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'one', exact: true })).toHaveCount(0)
+
+      await page.getByLabel('Expand tree-scale').click()
+      await expect(page.getByRole('button', { name: 'one', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'two', exact: true })).toHaveCount(0)
+
+      await page.getByLabel('Expand one').click()
+      await expect(page.getByRole('button', { name: 'two', exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'deep.tex', exact: true })).toHaveCount(0)
+    } finally {
+      await request.delete('/api/files/tree-scale')
+    }
+  })
+
+  test('open files follow external changes without overwriting local edits', async ({ page, request }) => {
+    const filePath = 'sections/introduction.tex'
+    const original = (await (await request.get(`/api/files/${filePath}`)).json()) as {
+      path: string
+      content: string
+    }
+    const externallyUpdated = original.content.replace(
+      'Edit this paragraph',
+      'An external tool updated this paragraph',
+    )
+    const conflictingExternal = `${externallyUpdated}\n% external conflict proof\n`
+
+    try {
+      await page.goto('/')
+      await page.getByLabel('Expand sections').click()
+      await page.getByRole('button', { name: 'introduction.tex', exact: true }).click()
+      const editor = page.locator('.cm-content')
+      await expect(editor).toContainText('Edit this paragraph')
+
+      const externalWrite = await request.put(`/api/files/${filePath}`, {
+        data: { path: filePath, content: externallyUpdated },
+      })
+      expect(externalWrite.ok()).toBeTruthy()
+      await expect(editor).toContainText('An external tool updated this paragraph', {
+        timeout: 5_000,
+      })
+
+      await editor.press('ControlOrMeta+a')
+      await page.keyboard.insertText(`${externallyUpdated}\n% unsaved Cloverleaf edit\n`)
+      await expect(page.locator('.save-state')).toHaveText('modified')
+      const conflictingWrite = await request.put(`/api/files/${filePath}`, {
+        data: { path: filePath, content: conflictingExternal },
+      })
+      expect(conflictingWrite.ok()).toBeTruthy()
+
+      await expect(page.getByRole('alert')).toContainText('changed on disk', { timeout: 5_000 })
+      await expect(editor).toContainText('unsaved Cloverleaf edit')
+      await expect.poll(async () => {
+        const response = await request.get(`/api/files/${filePath}`)
+        return ((await response.json()) as { content: string }).content
+      }).toBe(conflictingExternal)
+      await expect(page.locator('.save-state')).toHaveText('modified')
+    } finally {
+      await request.put(`/api/files/${filePath}`, {
+        data: { path: filePath, content: original.content },
+      })
+      await request.post('/api/compile')
     }
   })
 
@@ -269,6 +343,8 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
         `${path.basename(temporary)} / paper.tex`,
       )
       await expect(page.locator('.cm-content')).toContainText('Loaded project proof')
+      await expect(page.getByRole('button', { name: 'note.tex', exact: true })).toHaveCount(0)
+      await page.getByLabel('Expand sections').click()
       await expect(page.getByRole('button', { name: 'note.tex', exact: true })).toBeVisible()
       await expect(page.getByText('paper.pdf', { exact: true })).toHaveCount(0)
       await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })

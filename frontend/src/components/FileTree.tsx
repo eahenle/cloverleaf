@@ -42,7 +42,8 @@ export function FileTree({
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    setExpanded((current) => new Set([...current, ...directoryPaths(tree)]))
+    const available = new Set(directoryPaths(tree))
+    setExpanded((current) => new Set([...current].filter((path) => available.has(path))))
   }, [tree])
 
   const toggle = (path: string) => {

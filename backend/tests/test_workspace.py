@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cloverleaf.workspace import Workspace, WorkspaceError
+from cloverleaf.workspace import FileChangedError, Workspace, WorkspaceError
 
 
 def test_file_lifecycle_and_tree(tmp_path: Path) -> None:
@@ -20,6 +20,18 @@ def test_file_lifecycle_and_tree(tmp_path: Path) -> None:
     workspace.delete("sections/introduction.tex")
     workspace.delete("sections")
     assert workspace.tree() == []
+
+
+def test_versioned_write_rejects_external_changes(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "manuscript")
+    workspace.create("main.tex", "file", "first")
+    _content, version = workspace.read_versioned("main.tex")
+    (workspace.root / "main.tex").write_text("external", encoding="utf-8")
+
+    with pytest.raises(FileChangedError, match="changed on disk"):
+        workspace.write("main.tex", "stale editor", expected_version=version)
+
+    assert workspace.read("main.tex") == "external"
 
 
 @pytest.mark.parametrize(
