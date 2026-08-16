@@ -355,7 +355,10 @@ export default function App() {
   return (
     <main className="app-shell">
       <div className="topbar">
-        <span className="wordmark">cloverleaf</span>
+        <span className="wordmark">
+          <img src="/cloverleaf.svg" alt="" aria-hidden="true" />
+          cloverleaf
+        </span>
         <span className="project-path" title={project?.workspace}>
           {project?.name ?? 'workspace'} / {path ?? '—'}
         </span>

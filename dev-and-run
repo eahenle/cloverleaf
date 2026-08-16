@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$repo_dir"
+
+check_only=false
+case "${1:-}" in
+    "")
+        ;;
+    --check-only)
+        check_only=true
+        shift
+        ;;
+    *)
+        echo "usage: ./dev-and-run [--check-only]" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$#" -ne 0 ]; then
+    echo "usage: ./dev-and-run [--check-only]" >&2
+    exit 2
+fi
+
+make test
+make lint
+make typecheck
+make build
+make compile
+make test-e2e
+
+if [ "$check_only" = false ]; then
+    exec ./cloverleaf
+fi

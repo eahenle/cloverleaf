@@ -96,3 +96,38 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
   )).toBeLessThanOrEqual(1)
   expect(requestContext).not.toHaveProperty('project_tree')
 })
+
+test('terminal tab gates and confirms launcher shutdown', async ({ page }) => {
+  let shutdownRequests = 0
+  await page.route('**/api/runtime', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ managed: true, log_available: false, shutdown_available: true }),
+    }),
+  )
+  await page.route('**/api/runtime/shutdown', (route) => {
+    shutdownRequests += 1
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, message: 'Server shutdown requested' }),
+    })
+  })
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Terminal' }).click()
+  await expect(page.getByLabel('Server terminal')).toBeVisible()
+  await expect(page.getByText('backend + frontend stdout/stderr')).toBeVisible()
+  const shutdown = page.getByRole('button', { name: 'Shut down server' })
+  await expect(shutdown).toBeEnabled()
+
+  page.once('dialog', (dialog) => void dialog.dismiss())
+  await shutdown.click()
+  expect(shutdownRequests).toBe(0)
+
+  page.once('dialog', (dialog) => void dialog.accept())
+  await shutdown.click()
+  await expect(page.getByText('Server shutdown requested. This page will disconnect.')).toBeVisible()
+  expect(shutdownRequests).toBe(1)
+})

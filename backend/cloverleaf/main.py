@@ -137,6 +137,72 @@ def create_app(
     async def health():
         return {"ok": True}
 
+    @application.get("/api/runtime")
+    async def runtime_info():
+        log_path = application.state.settings.runtime_log_path
+        shutdown_path = application.state.settings.runtime_shutdown_path
+        return {
+            "managed": log_path is not None and shutdown_path is not None,
+            "log_available": log_path is not None and log_path.is_file(),
+            "shutdown_available": shutdown_path is not None,
+        }
+
+    @application.websocket("/api/runtime/logs")
+    async def runtime_logs(socket: WebSocket):
+        log_path = application.state.settings.runtime_log_path
+        if log_path is None or not log_path.is_file():
+            await socket.close(code=1008, reason="Runtime logs are unavailable")
+            return
+
+        await socket.accept()
+        position = max(0, log_path.stat().st_size - 200_000)
+        inode: int | None = None
+        if position:
+            await socket.send_text("[... earlier server output omitted ...]\n")
+        try:
+            while True:
+                try:
+                    stat = log_path.stat()
+                    if inode is not None and stat.st_ino != inode:
+                        position = 0
+                    inode = stat.st_ino
+                    if stat.st_size < position:
+                        position = 0
+                    if stat.st_size > position:
+                        with log_path.open("rb") as handle:
+                            handle.seek(position)
+                            chunk = handle.read(64_000)
+                        position += len(chunk)
+                        await socket.send_text(chunk.decode("utf-8", errors="replace"))
+                except FileNotFoundError:
+                    position = 0
+                    inode = None
+                try:
+                    await asyncio.wait_for(socket.receive_text(), timeout=0.35)
+                except TimeoutError:
+                    pass
+        except WebSocketDisconnect:
+            return
+
+    @application.post("/api/runtime/shutdown", status_code=202)
+    async def runtime_shutdown():
+        shutdown_path = application.state.settings.runtime_shutdown_path
+        if shutdown_path is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Shutdown is available only when Cloverleaf is started by its launcher",
+            )
+        if not shutdown_path.parent.is_dir():
+            raise HTTPException(status_code=503, detail="The Cloverleaf launcher is unavailable")
+        try:
+            shutdown_path.write_text("shutdown requested\n", encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Cloverleaf could not contact its launcher",
+            ) from exc
+        return {"ok": True, "message": "Server shutdown requested"}
+
     @application.get("/api/project/tree")
     async def get_tree(fs: Workspace = Depends(workspace)):
         return fs.tree()

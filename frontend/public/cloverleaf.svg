@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Five-leaf clover">
+  <path d="M33 34C36 42 39 50 47 58" fill="none" stroke="#579e6b" stroke-width="5" stroke-linecap="round"/>
+  <g fill="#74c98c" stroke="#17321f" stroke-width="1.5" stroke-linejoin="round">
+    <path id="leaf" d="M32 31C24 26 18 19 21 11C23 5 29 4 32 10C35 4 41 5 43 11C46 19 40 26 32 31Z"/>
+    <use href="#leaf" transform="rotate(72 32 32)"/>
+    <use href="#leaf" transform="rotate(144 32 32)"/>
+    <use href="#leaf" transform="rotate(216 32 32)"/>
+    <use href="#leaf" transform="rotate(288 32 32)"/>
+  </g>
+  <circle cx="32" cy="32" r="4.5" fill="#8cdaa1" stroke="#17321f" stroke-width="1.5"/>
+</svg>

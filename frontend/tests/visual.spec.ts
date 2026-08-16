@@ -44,6 +44,9 @@ for (const viewport of [
       await drag(page, 'Resize project and editor panels', 'x', 24)
       await drag(page, 'Resize editor and preview panels', 'x', -24)
       await drag(page, 'Resize preview and assistant panels', 'y', -24)
+      await page.getByRole('tab', { name: 'Terminal' }).click()
+      await expect(page.getByLabel('Server terminal')).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Shut down server' })).toBeDisabled()
     }
 
     await page.screenshot({

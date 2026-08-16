@@ -1,4 +1,4 @@
-.PHONY: install browser-install dev backend backend-test frontend test test-e2e test-live-codex lint typecheck build compile clean
+.PHONY: install browser-install start dev backend backend-test frontend test test-e2e test-live-codex lint typecheck build compile clean
 
 export UV_CACHE_DIR := $(CURDIR)/.uv-cache
 export PATH := /opt/homebrew/opt/texlive/bin:/Library/TeX/texbin:$(PATH)
@@ -9,6 +9,9 @@ install:
 
 browser-install:
 	cd frontend && npx playwright install chromium
+
+start:
+	uv run python scripts/dev.py --detach
 
 dev:
 	uv run python scripts/dev.py

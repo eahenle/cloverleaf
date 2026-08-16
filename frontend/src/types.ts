@@ -63,3 +63,9 @@ export type AssistantResponse = {
   message: string
   proposed_edits: ProposedEdit[]
 }
+
+export type RuntimeInfo = {
+  managed: boolean
+  log_available: boolean
+  shutdown_available: boolean
+}

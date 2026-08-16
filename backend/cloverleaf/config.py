@@ -16,6 +16,17 @@ class Settings(BaseSettings):
     ai_api_key: str = Field(default="", validation_alias="AI_API_KEY")
     codex_bin: str = Field(default="", validation_alias="CLOVERLEAF_CODEX_BIN")
     project_state_file: str = Field(default="", validation_alias="CLOVERLEAF_PROJECT_STATE")
+    runtime_log_file: str = Field(default="", validation_alias="CLOVERLEAF_RUNTIME_LOG")
+    runtime_shutdown_file: str = Field(
+        default="", validation_alias="CLOVERLEAF_RUNTIME_SHUTDOWN"
+    )
+
+    @staticmethod
+    def _optional_path(value: str) -> Path | None:
+        if not value.strip():
+            return None
+        configured = Path(value).expanduser()
+        return (configured if configured.is_absolute() else Path.cwd() / configured).resolve()
 
     @property
     def project_state_path(self) -> Path:
@@ -23,6 +34,14 @@ class Settings(BaseSettings):
             configured = Path(self.project_state_file).expanduser()
             return (configured if configured.is_absolute() else Path.cwd() / configured).resolve()
         return self.workspace.parent / ".cloverleaf-project.json"
+
+    @property
+    def runtime_log_path(self) -> Path | None:
+        return self._optional_path(self.runtime_log_file)
+
+    @property
+    def runtime_shutdown_path(self) -> Path | None:
+        return self._optional_path(self.runtime_shutdown_file)
 
     @field_validator("workspace")
     @classmethod

@@ -16,10 +16,12 @@ Install TeX Live on macOS with `brew install texlive` (or install MacTeX). On Fe
 ```bash
 cp .env.example .env
 make install
-./cloverleaf
+./dev-and-run
 ```
 
-Open <http://127.0.0.1:5173>. The FastAPI server binds to `127.0.0.1:8000`; Vite binds to `127.0.0.1:5173` and proxies `/api`. The root `./cloverleaf` entry point defaults to `make dev`, runs both processes, and stops both on Ctrl-C. Pass a Make target to run another workflow, such as `./cloverleaf test`.
+Open <http://127.0.0.1:5173>. The FastAPI server binds to `127.0.0.1:8000`; Vite binds to `127.0.0.1:5173` and proxies `/api`. The root `./dev-and-run` entry point runs the complete local validation gate and then launches the application headlessly. Use `./cloverleaf` when the checks have already passed and only a launch is needed; it returns after both processes are healthy. Pass a Make target to that wrapper to run another workflow, such as `./cloverleaf test`.
+
+The Codex panel's **Terminal** tab streams the launcher's bounded, tagged backend/frontend stdout and stderr. Its **Shut down server** button asks for confirmation and then cleanly stops both process groups. Runtime state and the rotating 1 MB log live under the ignored `.cloverleaf-runtime/` directory. `make dev` runs the same supervisor in the foreground when terminal-owned Ctrl-C shutdown is preferable.
 
 The default manuscript is `workspace/main.tex`. Relative workspace paths are resolved from the repository root. Change the workspace and compilation root in `.env`:
 
@@ -72,8 +74,11 @@ Provider secrets are read only by FastAPI and are never included in frontend bun
 
 ```bash
 make install          # Python and frontend dependencies
-make dev              # backend + frontend with reload
-./cloverleaf          # root entry point; defaults to make dev
+./dev-and-run         # run every local check, then launch headlessly
+./dev-and-run --check-only # run every local check without launching
+./cloverleaf          # start backend + frontend headlessly, then return
+make start            # same headless launch without the wrapper
+make dev              # foreground supervisor; Ctrl-C stops both processes
 ./cloverleaf test     # delegate to any documented Make target
 make backend          # FastAPI only on 127.0.0.1:8000
 make frontend         # Vite only on 127.0.0.1:5173
@@ -90,7 +95,7 @@ make clean            # remove LaTeX build artifacts
 
 FastAPI exposes interactive API documentation at <http://127.0.0.1:8000/docs> while the backend is running.
 
-The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It starts isolated, non-reused test servers on ports 8010 and 5183 so it cannot change or stop an interactive development session. It serializes tests because they intentionally edit the same local manuscript, restores fixture content after destructive cases, and captures ignored visual-validation screenshots under `screenshots/`.
+The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It starts isolated, non-reused test servers on ports 8010 and 5183 so it cannot change or stop an interactive development session. Those direct test servers deliberately report the Terminal tab as unmanaged and disable its shutdown button. The suite serializes tests because cases intentionally edit the same local manuscript, restores fixture content after destructive cases, and captures ignored visual-validation screenshots under `screenshots/`.
 
 ## Repository layout
 
@@ -101,6 +106,7 @@ frontend/src/        React workbench and primary panels
 frontend/tests/      Playwright authoring, compiler, error-state, and visual tests
 workspace/           Example three-page LaTeX manuscript
 docs/architecture.md Trust boundaries and component design
+.codex/skills/       Repository-local Codex development workflows
 ```
 
 ## Security and current scope

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dev and Run"
+  short_description: "Validate changes and launch Cloverleaf"
+  default_prompt: "Use $dev-and-run to validate this Cloverleaf change and launch the app."

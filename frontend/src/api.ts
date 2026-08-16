@@ -6,6 +6,7 @@ import type {
   DirectoryListing,
   FileContent,
   ProjectInfo,
+  RuntimeInfo,
   TreeNode,
 } from './types'
 
@@ -31,6 +32,16 @@ function encodePath(path: string): string {
 
 export const api = {
   health: () => request<{ ok: boolean }>('/api/health'),
+  runtime: () => request<RuntimeInfo>('/api/runtime'),
+  shutdownRuntime: () =>
+    request<{ ok: boolean; message: string }>('/api/runtime/shutdown', { method: 'POST' }),
+  watchRuntimeLogs: (onChunk: (chunk: string) => void, onError: () => void) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(`${protocol}//${window.location.host}/api/runtime/logs`)
+    socket.onmessage = (event) => onChunk(String(event.data))
+    socket.onerror = onError
+    return () => socket.close(1000)
+  },
   project: () => request<ProjectInfo>('/api/project'),
   browseDirectories: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : ''

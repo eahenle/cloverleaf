@@ -88,9 +88,48 @@ def test_symlink_escape_is_rejected_by_api(tmp_path: Path) -> None:
 def test_health_and_missing_pdf_are_clear(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         assert client.get("/api/health").json() == {"ok": True}
+        assert client.get("/api/runtime").json() == {
+            "managed": False,
+            "log_available": False,
+            "shutdown_available": False,
+        }
+        shutdown = client.post("/api/runtime/shutdown")
+        assert shutdown.status_code == 409
+        assert "launcher" in shutdown.json()["detail"]
         response = client.get("/api/pdf")
         assert response.status_code == 404
         assert response.json()["detail"] == "No successful PDF build is available yet"
+
+
+def test_launcher_runtime_logs_and_shutdown_signal(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("hello", encoding="utf-8")
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    log_path = runtime_dir / "server.log"
+    log_path.write_text("[backend:stderr] server ready\n", encoding="utf-8")
+    shutdown_path = runtime_dir / "shutdown"
+    settings = Settings(
+        CLOVERLEAF_WORKSPACE=workspace,
+        AI_PROVIDER="disabled",
+        CLOVERLEAF_RUNTIME_LOG=str(log_path),
+        CLOVERLEAF_RUNTIME_SHUTDOWN=str(shutdown_path),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/runtime").json() == {
+            "managed": True,
+            "log_available": True,
+            "shutdown_available": True,
+        }
+        with client.websocket_connect("/api/runtime/logs") as socket:
+            assert "server ready" in socket.receive_text()
+        response = client.post("/api/runtime/shutdown")
+
+    assert response.status_code == 202
+    assert response.json()["message"] == "Server shutdown requested"
+    assert shutdown_path.read_text(encoding="utf-8") == "shutdown requested\n"
 
 
 def test_project_can_be_loaded_at_runtime(tmp_path: Path) -> None:

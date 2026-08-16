@@ -1,11 +1,12 @@
 # Cloverleaf architecture
 
-Cloverleaf is a local-first two-process application. A Vite/React frontend provides the writing environment; a FastAPI backend owns all filesystem, compilation, and AI-provider access. Manuscript files live under one configured workspace root and are never mixed with application source.
+Cloverleaf is a local-first two-process application managed by a small launcher. A Vite/React frontend provides the writing environment; a FastAPI backend owns all filesystem, compilation, runtime-control, and AI-provider access. Manuscript files live under one configured workspace root and are never mixed with application source.
 
 ## Components
 
 - **Frontend (`frontend/`)**: React, TypeScript, CodeMirror 6, `react-resizable-panels`, and PDF.js. It uses JSON APIs, debounces saves and compilation requests independently, and polls short-lived compile status. PDF pages render to canvases and retain their approximate scroll position across successful recompiles.
 - **Backend (`backend/cloverleaf/`)**: FastAPI routes delegate to small services. `Workspace` resolves and validates every user path beneath the configured workspace. `Compiler` coalesces and serializes `latexmk` jobs, parses common LaTeX diagnostics, and exposes the latest successful PDF. `AssistantProvider` isolates Codex behind a read-only SDK adapter; an OpenAI-compatible adapter remains available as a fallback.
+- **Launcher (`scripts/dev.py`)**: supervises backend and frontend process groups with no terminal input, combines their stdout/stderr into a tagged 1 MB rotating log, and owns the shutdown lifecycle. The root entry point detaches this supervisor; `make dev` keeps only the supervisor in the foreground.
 - **Workspace (`workspace/`)**: the default manuscript project. `main.tex` is the configurable compilation root.
 
 The active workspace can be replaced at runtime through the project-load endpoint. A directory-browsing endpoint supplies the in-app folder picker with readable, non-hidden folders and direct `.tex` candidates; it does not return file contents. A folder without a direct `.tex` candidate receives a minimal `main.tex` as part of the confirmed load. A switch otherwise accepts only an existing absolute directory and an existing relative `.tex` compilation root. The backend finishes the current build, persists the selection in an ignored local state file, constructs a new `Workspace` and `Compiler`, rebinds Codex to the new working directory, and then exposes the new project atomically. Startup restores a still-valid saved selection, including after development reloads, without rewriting `.env`. Assistant turns also verify Codex's working directory against the authoritative backend workspace before starting.
@@ -13,6 +14,8 @@ The active workspace can be replaced at runtime through the project-load endpoin
 ## API and trust boundary
 
 The browser never receives provider secrets and never accesses the host filesystem directly. File routes reject absolute paths, traversal (including encoded and backslash forms), symlink escapes, dotfiles, and internal LaTeX build artifacts. Compilation invokes a fixed executable with a fixed argument list from the workspace directory, without a shell or shell escape.
+
+When the launcher is present, it passes FastAPI absolute paths for its runtime log and a private shutdown sentinel. FastAPI can stream the bounded log, but it does not expose a terminal or arbitrary process signaling. A confirmed shutdown request writes only that sentinel; the supervisor remains responsible for terminating its own child process groups. Direct backend launches have neither path and therefore expose no logs and reject shutdown.
 
 Codex runs server-side with the SDK's read-only sandbox preset. It can read project context supplied in a request and return complete-file proposals, but only Cloverleaf's explicit, confirmed apply flow can write those proposals.
 

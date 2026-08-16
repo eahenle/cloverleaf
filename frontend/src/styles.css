@@ -23,7 +23,8 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 
 .app-shell { height: 100%; display: flex; flex-direction: column; background: #0e110f; }
 .topbar { height: 34px; flex: 0 0 34px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 18px; padding: 0 10px; background: #111512; }
-.wordmark { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.wordmark { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.wordmark img { width: 17px; height: 17px; flex: 0 0 17px; }
 .project-path { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-build { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
 .topbar-build.success { color: var(--accent); }
@@ -91,6 +92,13 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .status-dot.error { background: var(--danger); }
 .status-dot.compiling { background: var(--warning); }
 
+.assistant-header { padding-left: 5px; }
+.panel-tabs { height: 100%; display: flex; align-items: stretch; gap: 1px; }
+.panel-tabs button { position: relative; padding: 0 7px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.panel-tabs button:hover { color: #d9dfda; background: #1c231f; }
+.panel-tabs button[aria-selected="true"] { color: #d9dfda; }
+.panel-tabs button[aria-selected="true"]::after { content: ''; position: absolute; left: 6px; right: 6px; bottom: 0; height: 2px; background: var(--accent); }
+
 .preview-body { background: #262b28; }
 .pdf-scroll { height: 100%; overflow: auto; padding: 14px; background: #262b28; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .pdf-page { display: block; max-width: 100%; height: auto; box-shadow: 0 3px 14px #0009; background: white; }
@@ -115,6 +123,14 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .chat-input:focus-within { border-color: #4c7659; }
 .chat-input textarea { flex: 1; resize: vertical; min-height: 42px; max-height: 120px; border: 0; outline: 0; padding: 6px; color: #d9dfda; background: transparent; font-size: 12px; line-height: 1.4; }
 .chat-input button { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 4px; color: #0e110f; background: var(--accent); margin: 0 1px 1px 3px; }
+
+.server-terminal { display: flex; flex-direction: column; background: #0c100d; }
+.terminal-toolbar { min-height: 35px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 7px 5px 9px; border-bottom: 1px solid var(--border); color: var(--muted); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.terminal-toolbar > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.danger-button { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; border: 1px solid #6d3838; border-radius: 3px; color: #eaa2a2; background: #291919; font: 9px Inter, ui-sans-serif, sans-serif; text-transform: uppercase; letter-spacing: .04em; }
+.danger-button:hover:not(:disabled) { border-color: var(--danger); color: #ffd0d0; background: #371d1d; }
+.terminal-message { flex: 0 0 auto; padding: 7px 9px; border-bottom: 1px solid #332b22; color: #d7bd83; background: #1e1a12; font-size: 10px; line-height: 1.4; }
+.terminal-output { flex: 1; min-height: 0; margin: 0; padding: 8px 9px 16px; overflow: auto; color: #aebbb2; background: #0c100d; font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 
 .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); max-width: min(70vw, 680px); padding: 8px 12px; border: 1px solid #753d3d; border-radius: 4px; background: #321c1c; color: #f2baba; font-size: 12px; box-shadow: 0 5px 20px #0009; z-index: 20; }
 
