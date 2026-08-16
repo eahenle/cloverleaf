@@ -51,16 +51,36 @@ export const api = {
     onError: () => void,
   ) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(
-      `${protocol}//${window.location.host}/api/file-events/${encodePath(path)}`,
-    )
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(String(event.data)) as FileContent & { deleted?: boolean }
-      if (payload.deleted) onDelete()
-      else onChange(payload)
+    const url = `${protocol}//${window.location.host}/api/file-events/${encodePath(path)}`
+    let socket: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let stopped = false
+
+    const connect = () => {
+      if (stopped) return
+      const nextSocket = new WebSocket(url)
+      socket = nextSocket
+      nextSocket.onmessage = (event) => {
+        const payload = JSON.parse(String(event.data)) as FileContent & { deleted?: boolean }
+        if (payload.deleted) {
+          stopped = true
+          onDelete()
+        } else {
+          onChange(payload)
+        }
+      }
+      nextSocket.onerror = onError
+      nextSocket.onclose = () => {
+        if (!stopped) reconnectTimer = window.setTimeout(connect, 1_000)
+      }
     }
-    socket.onerror = onError
-    return () => socket.close(1000)
+    connect()
+
+    return () => {
+      stopped = true
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+      socket?.close(1000)
+    }
   },
   write: (path: string, content: string, version?: string | null) =>
     request<FileContent>(`/api/files/${encodePath(path)}`, {
