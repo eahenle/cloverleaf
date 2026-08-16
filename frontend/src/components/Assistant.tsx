@@ -1,25 +1,34 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { Check, Send, X } from 'lucide-react'
-import type { ChatMessage, ProposedEdit } from '../types'
+import type { AssistantProgress, ChatMessage, ProposedEdit } from '../types'
 import { ServerTerminal } from './ServerTerminal'
 
 type Props = {
   messages: ChatMessage[]
   busy: boolean
+  progress: AssistantProgress | null
   onSend: (message: string) => void
   onApplyEdit: (edit: ProposedEdit) => Promise<boolean>
 }
 
-export function Assistant({ messages, busy, onSend, onApplyEdit }: Props) {
+export function Assistant({ messages, busy, progress, onSend, onApplyEdit }: Props) {
   const [draft, setDraft] = useState('')
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [activeTab, setActiveTab] = useState<'codex' | 'terminal'>('codex')
+  const [now, setNow] = useState(Date.now())
   const messageListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const messageList = messageListRef.current
     if (messageList) messageList.scrollTop = messageList.scrollHeight
   }, [busy, dismissed, messages])
+
+  useEffect(() => {
+    if (!busy) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [busy])
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault()
@@ -57,7 +66,10 @@ export function Assistant({ messages, busy, onSend, onApplyEdit }: Props) {
             Terminal
           </button>
         </div>
-        <span className={`status-dot ${busy ? 'compiling' : 'success'}`} title={busy ? 'Thinking' : 'Ready'} />
+        <span
+          className={`status-dot ${busy ? 'compiling' : 'success'}`}
+          title={busy ? progress?.message ?? 'Starting Codex' : 'Ready'}
+        />
       </header>
       {activeTab === 'codex' ? (
         <div className="panel-body chat" role="tabpanel" aria-label="Codex conversation">
@@ -100,7 +112,9 @@ export function Assistant({ messages, busy, onSend, onApplyEdit }: Props) {
                 })}
               </div>
             ))}
-            {busy && <div className="message thinking">Codex is reading the manuscript context…</div>}
+            {busy && (
+              <AssistantActivity progress={progress} now={now} />
+            )}
           </div>
           <form className="chat-input" onSubmit={submit}>
             <textarea
@@ -120,5 +134,28 @@ export function Assistant({ messages, busy, onSend, onApplyEdit }: Props) {
         <ServerTerminal />
       )}
     </section>
+  )
+}
+
+function AssistantActivity({ progress, now }: { progress: AssistantProgress | null; now: number }) {
+  const startedAt = progress?.started_at ?? now
+  const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1_000))
+  const signalAge = Math.max(0, Math.floor((now - (progress?.received_at ?? now)) / 1_000))
+  const signalState = signalAge < 6 ? 'live' : signalAge < 15 ? 'delayed' : 'stale'
+  const signalLabel = signalAge < 2 ? 'stream live' : `last signal ${signalAge}s ago`
+
+  return (
+    <div className="assistant-activity" role="status" aria-label="Codex activity">
+      <span className="activity-pulse" aria-hidden="true" />
+      <div>
+        <strong>{progress?.message ?? 'Starting Codex…'}</strong>
+        <span className="activity-phase">{progress?.phase ?? 'starting'}</span>
+        <small>
+          <span>{elapsedSeconds}s elapsed</span>
+          <span className={`activity-health ${signalState}`}>{signalLabel}</span>
+          <span>{progress?.activity_count ?? 0} runtime updates</span>
+        </small>
+      </div>
+    </div>
   )
 }

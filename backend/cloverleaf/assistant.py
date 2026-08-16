@@ -5,6 +5,7 @@ import logging
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -12,6 +13,8 @@ from .models import AssistantContext, AssistantMessage, AssistantResponse, Propo
 
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, str], None]
 
 CODEX_MAX_PROMPT_CHARS = 700_000
 OPEN_FILE_MAX_CHARS = 300_000
@@ -26,6 +29,15 @@ class AssistantProvider(ABC):
         self, messages: list[AssistantMessage], context: AssistantContext
     ) -> AssistantResponse:
         raise NotImplementedError
+
+    async def chat_with_progress(
+        self,
+        messages: list[AssistantMessage],
+        context: AssistantContext,
+        progress: ProgressCallback,
+    ) -> AssistantResponse:
+        progress("waiting", "Waiting for the assistant provider…")
+        return await self.chat(messages, context)
 
 
 class AssistantUnavailable(RuntimeError):
@@ -137,6 +149,14 @@ class CodexProvider(AssistantProvider):
     async def chat(
         self, messages: list[AssistantMessage], context: AssistantContext
     ) -> AssistantResponse:
+        return await self.chat_with_progress(messages, context, lambda _phase, _message: None)
+
+    async def chat_with_progress(
+        self,
+        messages: list[AssistantMessage],
+        context: AssistantContext,
+        progress: ProgressCallback,
+    ) -> AssistantResponse:
         try:
             from openai_codex import AsyncCodex, CodexConfig, Sandbox
         except ImportError as exc:
@@ -146,22 +166,107 @@ class CodexProvider(AssistantProvider):
 
         prompt = build_codex_prompt(messages, context, workspace_root=self.workspace)
         try:
+            progress("launching", "Launching the Codex runtime…")
             local_codex = self.codex_bin or shutil.which("codex")
             config = CodexConfig(codex_bin=local_codex) if local_codex else None
             async with AsyncCodex(config) as codex:
+                progress("connecting", "Connecting to Codex…")
                 thread = await codex.thread_start(
                     model=self.model,
                     sandbox=Sandbox.read_only,
                     cwd=self.workspace,
                 )
-                result = await thread.run(prompt)
+                progress("submitting", "Sending the manuscript request…")
+                turn = await thread.turn(prompt)
+                progress("working", "Codex accepted the request and is working…")
+                final_response = await _consume_codex_turn(turn, progress)
         except Exception as exc:
             logger.warning("Codex request failed (%s): %s", type(exc).__name__, exc)
             raise AssistantUnavailable(_codex_failure_message(exc)) from exc
-        return parse_response(result.final_response)
+        return parse_response(final_response)
 
     def for_workspace(self, workspace: Path) -> CodexProvider:
         return CodexProvider(self.model, str(workspace), self.codex_bin)
+
+
+def _thread_item(item: object) -> object:
+    return getattr(item, "root", item)
+
+
+def _item_type(item: object) -> str | None:
+    value = getattr(_thread_item(item), "type", None)
+    return value if isinstance(value, str) else None
+
+
+def codex_event_progress(event: object) -> tuple[str, str] | None:
+    """Map detailed SDK notifications to stable, non-sensitive UI phases."""
+
+    method = getattr(event, "method", "")
+    payload = getattr(event, "payload", None)
+    if method == "turn/started":
+        return "working", "Codex started analyzing the request…"
+    if method == "error" and getattr(payload, "will_retry", False):
+        return "retrying", "Codex hit a transient problem and is retrying…"
+    if method != "item/started":
+        return None
+
+    kind = _item_type(getattr(payload, "item", None))
+    if kind == "reasoning":
+        return "analyzing", "Analyzing the manuscript and project context…"
+    if kind == "commandExecution":
+        return "inspecting", "Inspecting project files in the read-only workspace…"
+    if kind in {"mcpToolCall", "dynamicToolCall", "webSearch"}:
+        return "tools", "Consulting a project tool…"
+    if kind == "plan":
+        return "planning", "Planning the response…"
+    if kind == "agentMessage":
+        return "responding", "Drafting the response…"
+    return None
+
+
+def _final_codex_response(items: list[object]) -> str | None:
+    fallback: str | None = None
+    for wrapped in reversed(items):
+        item = _thread_item(wrapped)
+        if _item_type(item) != "agentMessage":
+            continue
+        text = getattr(item, "text", None)
+        if not isinstance(text, str):
+            continue
+        phase = getattr(getattr(item, "phase", None), "value", None)
+        if phase == "final_answer":
+            return text
+        if phase is None and fallback is None:
+            fallback = text
+    return fallback
+
+
+async def _consume_codex_turn(turn: object, progress: ProgressCallback) -> str:
+    items: list[object] = []
+    completed_turn: object | None = None
+    async for event in turn.stream():
+        next_progress = codex_event_progress(event)
+        if next_progress is not None:
+            progress(*next_progress)
+        if getattr(event, "method", "") == "item/completed":
+            item = getattr(getattr(event, "payload", None), "item", None)
+            if item is not None:
+                items.append(item)
+        elif getattr(event, "method", "") == "turn/completed":
+            completed_turn = getattr(getattr(event, "payload", None), "turn", None)
+
+    if completed_turn is None:
+        raise RuntimeError("turn completed event not received")
+    status = getattr(getattr(completed_turn, "status", None), "value", None)
+    if status != "completed":
+        error = getattr(completed_turn, "error", None)
+        message = getattr(error, "message", None)
+        raise RuntimeError(message or f"turn ended with status {status or 'unknown'}")
+    final_response = _final_codex_response(items)
+    if final_response is None:
+        raise RuntimeError("turn completed without a final response")
+    progress("complete", "Codex completed the response.")
+    return final_response
 
 
 class OpenAICompatibleProvider(AssistantProvider):

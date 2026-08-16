@@ -7,7 +7,7 @@ import { FileTree } from './components/FileTree'
 import { PdfPreview } from './components/PdfPreview'
 import { ProjectPicker } from './components/ProjectPicker'
 import { ProjectStatus } from './components/ProjectStatus'
-import type { ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, TreeNode } from './types'
+import type { AssistantProgress, ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, TreeNode } from './types'
 
 const initialStatus: CompileStatus = {
   state: 'idle',
@@ -30,6 +30,7 @@ export default function App() {
   const [status, setStatus] = useState<CompileStatus>(initialStatus)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [assistantBusy, setAssistantBusy] = useState(false)
+  const [assistantProgress, setAssistantProgress] = useState<AssistantProgress | null>(null)
   const [projectLoading, setProjectLoading] = useState(false)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [toast, setToast] = useState('')
@@ -259,6 +260,7 @@ export default function App() {
       updateDirty(false)
       setSelectedText('')
       setMessages([])
+      setAssistantProgress(null)
       setStatus(initialStatus)
       await requestCompile()
     } finally {
@@ -307,13 +309,22 @@ export default function App() {
     const next: ChatMessage[] = [...messages, { role: 'user', content: message }]
     setMessages(next)
     setAssistantBusy(true)
+    const startedAt = Date.now()
+    setAssistantProgress({
+      phase: 'preparing',
+      message: 'Preparing the open-file context…',
+      activity_count: 0,
+      heartbeat: false,
+      received_at: startedAt,
+      started_at: startedAt,
+    })
     try {
       const result = await api.chat(next, {
         open_file: pathRef.current,
         open_file_content: contentRef.current,
         selected_text: selectedText || null,
         diagnostics: status.diagnostics,
-      })
+      }, startedAt, setAssistantProgress)
       setMessages([...next, { role: 'assistant', content: result.message, edits: result.proposed_edits }])
     } catch (reason) {
       showError(reason)
@@ -323,6 +334,7 @@ export default function App() {
       }])
     } finally {
       setAssistantBusy(false)
+      setAssistantProgress(null)
     }
   }
 
@@ -410,6 +422,7 @@ export default function App() {
               <Assistant
                 messages={messages}
                 busy={assistantBusy}
+                progress={assistantProgress}
                 onSend={(message) => void sendMessage(message)}
                 onApplyEdit={applyEdit}
               />

@@ -59,6 +59,8 @@ This checkout can pin the assistant to the personal multi-cli profile by setting
 
 Assistant turns run server-side with the Codex read-only sandbox. Cloverleaf automatically includes the active file, selected text, and compiler diagnostics, but it does not serialize the project tree into the request. Codex starts in the selected workspace and inspects other files on demand with its read-only tools. The browser never receives provider credentials. Codex can return complete-file proposals, but Cloverleaf shows each proposal as a review card and requires confirmation before writing it. Explicitly attaching additional files is a future enhancement.
 
+While a turn is running, the assistant panel streams non-sensitive SDK lifecycle phases such as connecting, analyzing, inspecting project files, using tools, retrying, and drafting. It also shows elapsed time, runtime-update count, and a three-second transport heartbeat, so a quiet model turn remains distinguishable from a stalled browser/backend connection. Detailed commands, tool arguments, and reasoning text are intentionally not sent to the browser.
+
 An OpenAI-compatible fallback remains behind the same provider interface:
 
 ```dotenv

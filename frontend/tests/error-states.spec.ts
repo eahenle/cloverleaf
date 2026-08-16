@@ -97,6 +97,41 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
   expect(requestContext).not.toHaveProperty('project_tree')
 })
 
+test('assistant shows elapsed time and live runtime health', async ({ page }) => {
+  await page.routeWebSocket('**/api/assistant/progress/*', (socket) => {
+    socket.send(JSON.stringify({
+      phase: 'inspecting',
+      message: 'Inspecting project files in the read-only workspace…',
+      activity_count: 4,
+      heartbeat: false,
+    }))
+    setTimeout(() => socket.send(JSON.stringify({
+      phase: 'inspecting',
+      message: 'Inspecting project files in the read-only workspace…',
+      activity_count: 4,
+      heartbeat: true,
+    })), 650)
+  })
+  await page.route('**/api/assistant/chat', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_400))
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'Finished after inspection.', proposed_edits: [] }),
+    })
+  })
+
+  await page.goto('/')
+  await page.getByLabel('Message Codex').fill('Inspect the project')
+  await page.getByLabel('Send message').click()
+  const activity = page.getByLabel('Codex activity')
+  await expect(activity).toContainText('Inspecting project files')
+  await expect(activity).toContainText('stream live')
+  await expect(activity).toContainText('4 runtime updates')
+  await expect(activity).toContainText(/1s elapsed/)
+  await expect(page.locator('.message.assistant').last()).toContainText('Finished after inspection.')
+})
+
 test('terminal tab gates and confirms launcher shutdown', async ({ page }) => {
   let shutdownRequests = 0
   await page.route('**/api/runtime', (route) =>

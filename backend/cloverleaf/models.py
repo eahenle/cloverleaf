@@ -89,8 +89,21 @@ class ProposedEdit(BaseModel):
 class AssistantRequest(BaseModel):
     messages: list[AssistantMessage]
     context: AssistantContext
+    request_id: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    )
 
 
 class AssistantResponse(BaseModel):
     message: str
     proposed_edits: list[ProposedEdit] = Field(default_factory=list)
+
+
+class AssistantProgress(BaseModel):
+    phase: str
+    message: str
+    activity_count: int = 0
+    heartbeat: bool = False

@@ -5,6 +5,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
@@ -22,6 +23,7 @@ from .compiler import Compiler
 from .config import Settings, get_settings
 from .models import (
     AssistantRequest,
+    AssistantProgress,
     AssistantResponse,
     CreateEntry,
     DirectoryEntry,
@@ -35,6 +37,7 @@ from .workspace import FileChangedError, Workspace, WorkspaceError
 
 
 logger = logging.getLogger(__name__)
+ASSISTANT_HEARTBEAT_SECONDS = 3
 
 DEFAULT_MAIN_TEX = """\\documentclass{article}
 \\title{Untitled manuscript}
@@ -119,6 +122,7 @@ def create_app(
         app.state.main_file = initial_main_file
         app.state.project_state_path = settings.project_state_path
         app.state.project_lock = asyncio.Lock()
+        app.state.assistant_progress = {}
         yield
 
     application = FastAPI(title="Cloverleaf", version="0.1.0", lifespan=lifespan)
@@ -442,6 +446,64 @@ def create_app(
 
     @application.post("/api/assistant/chat", response_model=AssistantResponse)
     async def assistant_chat(body: AssistantRequest):
+        queue: asyncio.Queue[AssistantProgress | None] | None = None
+        if body.request_id is not None:
+            queue = application.state.assistant_progress.get(body.request_id)
+        activity_count = 0
+
+        def report(phase: str, message: str) -> None:
+            nonlocal activity_count
+            if queue is None:
+                return
+            activity_count += 1
+            queue.put_nowait(
+                AssistantProgress(
+                    phase=phase,
+                    message=message,
+                    activity_count=activity_count,
+                )
+            )
+
+        try:
+            return await run_assistant(body, report if queue is not None else None)
+        finally:
+            if queue is not None:
+                queue.put_nowait(None)
+
+    @application.websocket("/api/assistant/progress/{request_id}")
+    async def assistant_progress(socket: WebSocket, request_id: UUID):
+        request_key = str(request_id)
+        queue: asyncio.Queue[AssistantProgress | None] = asyncio.Queue()
+        application.state.assistant_progress[request_key] = queue
+        current = AssistantProgress(
+            phase="preparing",
+            message="Preparing the open-file context…",
+        )
+        await socket.accept()
+        await socket.send_json(current.model_dump())
+        try:
+            while True:
+                try:
+                    update = await asyncio.wait_for(
+                        queue.get(), timeout=ASSISTANT_HEARTBEAT_SECONDS
+                    )
+                    if update is None:
+                        await socket.close(code=1000)
+                        return
+                    current = update
+                except TimeoutError:
+                    current = current.model_copy(update={"heartbeat": True})
+                await socket.send_json(current.model_dump())
+        except (WebSocketDisconnect, RuntimeError):
+            return
+        finally:
+            if application.state.assistant_progress.get(request_key) is queue:
+                application.state.assistant_progress.pop(request_key, None)
+
+    async def run_assistant(
+        body: AssistantRequest,
+        progress=None,
+    ) -> AssistantResponse:
         try:
             async with application.state.project_lock:
                 assistant = application.state.assistant
@@ -450,6 +512,10 @@ def create_app(
                     if Path(assistant.workspace).resolve() != active_workspace:
                         assistant = assistant.for_workspace(active_workspace)
                         application.state.assistant = assistant
+                if progress is not None:
+                    return await assistant.chat_with_progress(
+                        body.messages, body.context, progress
+                    )
                 return await assistant.chat(body.messages, body.context)
         except AssistantUnavailable as exc:
             logger.warning("Assistant unavailable: %s", exc)

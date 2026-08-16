@@ -1,14 +1,18 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from cloverleaf.assistant import (
     CODEX_MAX_PROMPT_CHARS,
     AssistantProvider,
     OpenAICompatibleProvider,
+    _consume_codex_turn,
     build_codex_prompt,
+    codex_event_progress,
     parse_response,
 )
 from cloverleaf.config import Settings
@@ -39,6 +43,66 @@ def test_malformed_edit_block_remains_visible() -> None:
     response = parse_response(content)
     assert response.message == content
     assert response.proposed_edits == []
+
+
+def test_codex_events_report_safe_runtime_phases() -> None:
+    reasoning = SimpleNamespace(
+        method="item/started",
+        payload=SimpleNamespace(item=SimpleNamespace(root=SimpleNamespace(type="reasoning"))),
+    )
+    command = SimpleNamespace(
+        method="item/started",
+        payload=SimpleNamespace(
+            item=SimpleNamespace(
+                root=SimpleNamespace(type="commandExecution", command="cat secret.env")
+            )
+        ),
+    )
+
+    assert codex_event_progress(reasoning) == (
+        "analyzing",
+        "Analyzing the manuscript and project context…",
+    )
+    assert codex_event_progress(command) == (
+        "inspecting",
+        "Inspecting project files in the read-only workspace…",
+    )
+    assert "secret" not in codex_event_progress(command)[1]
+
+
+async def test_codex_turn_stream_collects_response_and_progress() -> None:
+    final_item = SimpleNamespace(
+        root=SimpleNamespace(
+            type="agentMessage",
+            text="A healthy streamed response",
+            phase=SimpleNamespace(value="final_answer"),
+        )
+    )
+    events = [
+        SimpleNamespace(method="turn/started", payload=SimpleNamespace()),
+        SimpleNamespace(
+            method="item/started",
+            payload=SimpleNamespace(item=SimpleNamespace(root=SimpleNamespace(type="reasoning"))),
+        ),
+        SimpleNamespace(method="item/completed", payload=SimpleNamespace(item=final_item)),
+        SimpleNamespace(
+            method="turn/completed",
+            payload=SimpleNamespace(
+                turn=SimpleNamespace(status=SimpleNamespace(value="completed"), error=None)
+            ),
+        ),
+    ]
+
+    class FakeTurn:
+        async def stream(self):
+            for event in events:
+                yield event
+
+    progress: list[tuple[str, str]] = []
+    response = await _consume_codex_turn(FakeTurn(), lambda *update: progress.append(update))
+
+    assert response == "A healthy streamed response"
+    assert [phase for phase, _message in progress] == ["working", "analyzing", "complete"]
 
 
 def test_codex_prompt_sends_open_file_without_project_tree() -> None:
@@ -165,3 +229,75 @@ def test_assistant_receives_complete_context_without_credentials(tmp_path: Path)
     assert provider.context.selected_text == "script"
     assert provider.context.diagnostics[0].line == 4
     assert "server-secret" not in response.text
+
+
+class SlowProgressProvider(AssistantProvider):
+    async def chat(
+        self, messages: list[AssistantMessage], context: AssistantContext
+    ) -> AssistantResponse:
+        return AssistantResponse(message="stream complete")
+
+    async def chat_with_progress(self, messages, context, progress):
+        import asyncio
+
+        progress("connecting", "Connecting to fake Codex…")
+        await asyncio.sleep(0.035)
+        progress("responding", "Drafting the fake response…")
+        return await self.chat(messages, context)
+
+
+def test_assistant_progress_socket_reports_phases_and_heartbeats(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+    monkeypatch.setattr("cloverleaf.main.ASSISTANT_HEARTBEAT_SECONDS", 0.01)
+
+    request_id = "12345678-1234-1234-1234-123456789abc"
+    with TestClient(create_app(settings, SlowProgressProvider())) as client:
+        with client.websocket_connect(f"/api/assistant/progress/{request_id}") as socket:
+            events = [socket.receive_json()]
+            response = client.post(
+                "/api/assistant/chat",
+                json={
+                    "messages": [{"role": "user", "content": "Explain this"}],
+                    "context": {},
+                    "request_id": request_id,
+                },
+            )
+            while True:
+                try:
+                    events.append(socket.receive_json())
+                except WebSocketDisconnect:
+                    break
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "stream complete"
+    assert events[0]["phase"] == "preparing"
+    assert any(event["heartbeat"] for event in events)
+    assert [event["phase"] for event in events if not event["heartbeat"]] == [
+        "preparing",
+        "connecting",
+        "responding",
+    ]
+
+
+def test_assistant_request_id_is_bounded(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, SlowProgressProvider())) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Explain this"}],
+                "context": {},
+                "request_id": "../../not-a-request-id",
+            },
+        )
+
+    assert response.status_code == 422

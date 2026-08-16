@@ -1,5 +1,6 @@
 import type {
   AssistantContext,
+  AssistantProgress,
   AssistantResponse,
   ChatMessage,
   CompileStatus,
@@ -13,17 +14,78 @@ import type {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { cache: 'no-store', ...init })
   if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      if (payload.detail) detail = payload.detail
-    } catch {
-      // Keep the HTTP status when the server did not return JSON.
-    }
-    throw new Error(detail)
+    throw new Error(await responseError(response))
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+async function responseError(response: Response): Promise<string> {
+  let detail = `${response.status} ${response.statusText}`
+  try {
+    const payload = (await response.json()) as { detail?: string }
+    if (payload.detail) detail = payload.detail
+  } catch {
+    // Keep the HTTP status when the server did not return JSON.
+  }
+  return detail
+}
+
+async function progressChat(
+  messages: ChatMessage[],
+  context: AssistantContext,
+  startedAt: number,
+  onProgress: (progress: AssistantProgress) => void,
+): Promise<AssistantResponse> {
+  const requestId = crypto.randomUUID()
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const socket = new WebSocket(
+    `${protocol}//${window.location.host}/api/assistant/progress/${requestId}`,
+  )
+  const connected = await new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      resolve(value)
+    }
+    const timeout = window.setTimeout(() => finish(false), 2_000)
+    socket.onopen = () => finish(true)
+    socket.onerror = () => finish(false)
+    socket.onmessage = (event) => {
+      const progress = JSON.parse(String(event.data)) as Omit<
+        AssistantProgress,
+        'received_at' | 'started_at'
+      >
+      onProgress({ ...progress, started_at: startedAt, received_at: Date.now() })
+    }
+  })
+  if (!connected) {
+    socket.close()
+    onProgress({
+      phase: 'connection',
+      message: 'The progress channel is unavailable; the Codex request is still running…',
+      activity_count: 0,
+      heartbeat: false,
+      received_at: Date.now(),
+      started_at: startedAt,
+    })
+  }
+
+  try {
+    return await request<AssistantResponse>('/api/assistant/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: messages.map(({ role, content }) => ({ role, content })),
+        context,
+        request_id: requestId,
+      }),
+    })
+  } finally {
+    socket.close(1000)
+  }
 }
 
 function encodePath(path: string): string {
@@ -115,13 +177,10 @@ export const api = {
     request<void>(`/api/files/${encodePath(path)}`, { method: 'DELETE' }),
   compile: () => request<CompileStatus>('/api/compile', { method: 'POST' }),
   compileStatus: () => request<CompileStatus>('/api/compile/status'),
-  chat: (messages: ChatMessage[], context: AssistantContext) =>
-    request<AssistantResponse>('/api/assistant/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: messages.map(({ role, content }) => ({ role, content })),
-        context,
-      }),
-    }),
+  chat: (
+    messages: ChatMessage[],
+    context: AssistantContext,
+    startedAt: number,
+    onProgress: (progress: AssistantProgress) => void,
+  ) => progressChat(messages, context, startedAt, onProgress),
 }

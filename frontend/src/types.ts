@@ -64,6 +64,15 @@ export type AssistantResponse = {
   proposed_edits: ProposedEdit[]
 }
 
+export type AssistantProgress = {
+  phase: string
+  message: string
+  activity_count: number
+  heartbeat: boolean
+  received_at: number
+  started_at: number
+}
+
 export type RuntimeInfo = {
   managed: boolean
   log_available: boolean

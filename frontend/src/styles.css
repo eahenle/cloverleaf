@@ -113,7 +113,17 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .message { font-size: 12px; line-height: 1.5; margin-bottom: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.user { margin-left: 22px; padding: 7px 9px; background: #26302a; border-radius: 6px 6px 1px 6px; }
 .message.assistant { color: #cbd3cd; }
-.message.thinking { color: var(--muted); font-style: italic; }
+.assistant-activity { display: flex; align-items: flex-start; gap: 8px; margin: 3px 0 11px; padding: 8px 9px; border: 1px solid #34463a; border-radius: 4px; color: #cbd3cd; background: #151d18; }
+.activity-pulse { width: 7px; height: 7px; flex: 0 0 7px; margin-top: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 #74c98c66; animation: activity-pulse 1.8s ease-out infinite; }
+.assistant-activity > div { min-width: 0; flex: 1; display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; }
+.assistant-activity strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
+.activity-phase { color: var(--accent); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .07em; }
+.assistant-activity small { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 3px 8px; color: var(--muted); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.activity-health::before { content: '●'; margin-right: 4px; }
+.activity-health.live { color: #78cb8e; }
+.activity-health.delayed { color: var(--warning); }
+.activity-health.stale { color: var(--danger); }
+@keyframes activity-pulse { 70%, 100% { box-shadow: 0 0 0 6px #74c98c00; } }
 .proposed-edit { margin-top: 8px; padding: 8px; border: 1px solid #375140; background: #172019; border-radius: 4px; display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .proposed-edit strong { font-family: ui-monospace, monospace; color: var(--accent); overflow-wrap: anywhere; }
 .proposed-edit div { display: flex; gap: 6px; margin-top: 3px; }

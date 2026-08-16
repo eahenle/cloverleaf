@@ -144,16 +144,8 @@ def child_environment() -> dict[str, str]:
     return environment
 
 
-def supervise(*, foreground: bool) -> int:
-    lock_handle = acquire_lock()
-    if lock_handle is None:
-        if foreground:
-            print("Cloverleaf is already running at http://127.0.0.1:5173")
-        return 0
-
-    SHUTDOWN_PATH.unlink(missing_ok=True)
-    runtime_log = RuntimeLog(LOG_PATH)
-    commands = [
+def child_commands() -> list[tuple[str, list[str], Path]]:
+    return [
         (
             "backend",
             [
@@ -168,11 +160,25 @@ def supervise(*, foreground: bool) -> int:
                 "--port",
                 "8000",
                 "--reload",
+                "--timeout-graceful-shutdown",
+                "2",
             ],
             ROOT,
         ),
         ("frontend", ["npm", "run", "dev", "--", "--host", "127.0.0.1"], ROOT / "frontend"),
     ]
+
+
+def supervise(*, foreground: bool) -> int:
+    lock_handle = acquire_lock()
+    if lock_handle is None:
+        if foreground:
+            print("Cloverleaf is already running at http://127.0.0.1:5173")
+        return 0
+
+    SHUTDOWN_PATH.unlink(missing_ok=True)
+    runtime_log = RuntimeLog(LOG_PATH)
+    commands = child_commands()
     processes: list[tuple[str, subprocess.Popen[str]]] = []
     readers: list[threading.Thread] = []
     stopping = threading.Event()

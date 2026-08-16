@@ -36,3 +36,10 @@ def test_child_environment_configures_headless_runtime(monkeypatch) -> None:
     assert environment["PYTHONUNBUFFERED"] == "1"
     assert environment["CLOVERLEAF_RUNTIME_LOG"] == str(dev.LOG_PATH)
     assert environment["CLOVERLEAF_RUNTIME_SHUTDOWN"] == str(dev.SHUTDOWN_PATH)
+
+
+def test_backend_reload_has_bounded_graceful_shutdown() -> None:
+    backend = next(command for name, command, _cwd in dev.child_commands() if name == "backend")
+
+    timeout_index = backend.index("--timeout-graceful-shutdown")
+    assert backend[timeout_index + 1] == "2"
