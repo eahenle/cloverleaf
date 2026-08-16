@@ -4,6 +4,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.cloverleaf-project.json*
 
 frontend/node_modules/
 frontend/dist/

@@ -53,6 +53,7 @@ def build_codex_prompt(
     context: AssistantContext,
     *,
     can_inspect_workspace: bool = True,
+    workspace_root: str | None = None,
 ) -> str:
     transcript = "\n\n".join(
         f"{message.role.upper()}: {message.content}" for message in messages
@@ -85,6 +86,7 @@ def build_codex_prompt(
         f"{runtime_guidance}"
         "If a complete-file edit is useful, append a fenced JSON block tagged cloverleaf-edits "
         "containing an array of objects with path, content, and summary.\n\n"
+        f"WORKSPACE ROOT: {workspace_root or '(not available)'}\n"
         f"OPEN FILE: {context.open_file or '(none)'}\n"
         f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
         f"SELECTED TEXT:\n{selected_text}\n\n"
@@ -142,7 +144,7 @@ class CodexProvider(AssistantProvider):
                 "The Codex SDK is not installed. Run `make install` and restart Cloverleaf."
             ) from exc
 
-        prompt = build_codex_prompt(messages, context)
+        prompt = build_codex_prompt(messages, context, workspace_root=self.workspace)
         try:
             local_codex = self.codex_bin or shutil.which("codex")
             config = CodexConfig(codex_bin=local_codex) if local_codex else None

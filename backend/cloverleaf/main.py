@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -49,6 +50,36 @@ Start writing here.
 """
 
 
+def restore_project(settings: Settings) -> tuple[Path, str]:
+    state_path = settings.project_state_path
+    if not state_path.exists():
+        return settings.workspace, settings.main_file
+    try:
+        saved = LoadProject.model_validate_json(state_path.read_text(encoding="utf-8"))
+        candidate = Path(saved.workspace).expanduser()
+        if not candidate.is_absolute() or not candidate.exists() or not candidate.is_dir():
+            raise ValueError("saved workspace is unavailable")
+        candidate = candidate.resolve()
+        saved_workspace = Workspace(candidate)
+        main_path = saved_workspace.resolve(saved.main_file, must_exist=True)
+        if not main_path.is_file() or main_path.suffix.lower() != ".tex":
+            raise ValueError("saved compilation root is unavailable")
+        return candidate, main_path.relative_to(candidate).as_posix()
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("Ignoring invalid saved project selection at %s: %s", state_path, exc)
+        return settings.workspace, settings.main_file
+
+
+def persist_project(state_path: Path, workspace: Path, main_file: str) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(f"{state_path.name}.tmp")
+    temporary.write_text(
+        json.dumps({"workspace": str(workspace), "main_file": main_file}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(state_path)
+
+
 def build_assistant(settings: Settings, workspace: Path | None = None) -> AssistantProvider:
     if settings.ai_provider == "codex":
         return CodexProvider(
@@ -75,11 +106,18 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         settings = configured_settings or get_settings()
-        app.state.workspace = Workspace(settings.workspace)
-        app.state.compiler = Compiler(settings.workspace, settings.main_file)
-        app.state.assistant = configured_assistant or build_assistant(settings)
+        initial_workspace, initial_main_file = restore_project(settings)
+        app.state.workspace = Workspace(initial_workspace)
+        app.state.compiler = Compiler(initial_workspace, initial_main_file)
+        if configured_assistant is None:
+            app.state.assistant = build_assistant(settings, initial_workspace)
+        elif isinstance(configured_assistant, CodexProvider):
+            app.state.assistant = configured_assistant.for_workspace(initial_workspace)
+        else:
+            app.state.assistant = configured_assistant
         app.state.settings = settings
-        app.state.main_file = settings.main_file
+        app.state.main_file = initial_main_file
+        app.state.project_state_path = settings.project_state_path
         app.state.project_lock = asyncio.Lock()
         yield
 
@@ -221,6 +259,13 @@ def create_app(
                 next_workspace.create("main.tex", "file", DEFAULT_MAIN_TEX)
             elif create_main and not main_path.is_file():
                 raise HTTPException(status_code=400, detail="Compilation root must be a file")
+            try:
+                persist_project(application.state.project_state_path, candidate, main_file)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="The project is valid, but Cloverleaf could not save the selection",
+                ) from exc
             application.state.workspace = next_workspace
             application.state.compiler = Compiler(candidate, main_file)
             application.state.main_file = main_file
@@ -299,7 +344,14 @@ def create_app(
     @application.post("/api/assistant/chat", response_model=AssistantResponse)
     async def assistant_chat(body: AssistantRequest):
         try:
-            return await application.state.assistant.chat(body.messages, body.context)
+            async with application.state.project_lock:
+                assistant = application.state.assistant
+                if isinstance(assistant, CodexProvider):
+                    active_workspace = application.state.workspace.root
+                    if Path(assistant.workspace).resolve() != active_workspace:
+                        assistant = assistant.for_workspace(active_workspace)
+                        application.state.assistant = assistant
+                return await assistant.chat(body.messages, body.context)
         except AssistantUnavailable as exc:
             logger.warning("Assistant unavailable: %s", exc)
             raise HTTPException(status_code=503, detail=str(exc)) from exc

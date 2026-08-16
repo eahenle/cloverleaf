@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     ai_base_url: str = Field(default="", validation_alias="AI_BASE_URL")
     ai_api_key: str = Field(default="", validation_alias="AI_API_KEY")
     codex_bin: str = Field(default="", validation_alias="CLOVERLEAF_CODEX_BIN")
+    project_state_file: str = Field(default="", validation_alias="CLOVERLEAF_PROJECT_STATE")
+
+    @property
+    def project_state_path(self) -> Path:
+        if self.project_state_file.strip():
+            configured = Path(self.project_state_file).expanduser()
+            return (configured if configured.is_absolute() else Path.cwd() / configured).resolve()
+        return self.workspace.parent / ".cloverleaf-project.json"
 
     @field_validator("workspace")
     @classmethod

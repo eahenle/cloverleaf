@@ -30,7 +30,7 @@ CLOVERLEAF_MAIN_FILE=paper.tex
 
 `CLOVERLEAF_MAIN_FILE` must be a relative `.tex` path inside that workspace.
 
-While Cloverleaf is running, use **Load project** (the open-folder button in the Project panel) to switch to another local manuscript. The modal folder picker navigates the server's local filesystem with Up, Home, and Computer shortcuts and offers the selected folder's `.tex` files as compilation roots—no path entry is required. If the folder has no root-level `.tex` file, Cloverleaf creates a minimal `main.tex` automatically. The backend validates the selection before switching, waits for any active build to finish, clears project-specific editor and assistant state, and compiles the loaded manuscript. Runtime selections last until the server restarts; update `.env` to make one the default.
+While Cloverleaf is running, use **Load project** (the open-folder button in the Project panel) to switch to another local manuscript. The modal folder picker navigates the server's local filesystem with Up, Home, and Computer shortcuts and offers the selected folder's `.tex` files as compilation roots—no path entry is required. If the folder has no root-level `.tex` file, Cloverleaf creates a minimal `main.tex` automatically. The backend validates the selection before switching, waits for any active build to finish, clears project-specific editor and assistant state, and compiles the loaded manuscript. The selection is saved in the ignored `.cloverleaf-project.json` state file and restored after backend restarts or development reloads. Set `CLOVERLEAF_PROJECT_STATE` to move that state file, or remove it to return to the `.env` default.
 
 ## Codex assistant
 

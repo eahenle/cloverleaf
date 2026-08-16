@@ -49,7 +49,9 @@ def test_codex_prompt_sends_open_file_without_project_tree() -> None:
     )
 
     prompt = build_codex_prompt(
-        [AssistantMessage(role="user", content="Explain the manuscript")], context
+        [AssistantMessage(role="user", content="Explain the manuscript")],
+        context,
+        workspace_root="/projects/word-salad",
     )
 
     assert len(prompt) <= CODEX_MAX_PROMPT_CHARS
@@ -59,6 +61,7 @@ def test_codex_prompt_sends_open_file_without_project_tree() -> None:
     assert "Explain the manuscript" in prompt
     assert "PROJECT TREE" not in prompt
     assert "Inspect files in the current workspace" in prompt
+    assert "WORKSPACE ROOT: /projects/word-salad" in prompt
 
 
 def test_assistant_prompt_keeps_latest_message_with_large_history() -> None:

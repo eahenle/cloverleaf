@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from cloverleaf.assistant import CodexProvider
 from cloverleaf.config import Settings
 from cloverleaf.main import create_app
+from cloverleaf.models import AssistantContext, AssistantMessage, AssistantResponse
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -107,6 +108,19 @@ def test_project_can_be_loaded_at_runtime(tmp_path: Path) -> None:
         assert client.app.state.compiler.workspace == other.resolve()
         assert client.app.state.compiler.main_file == "paper.tex"
 
+    state_path = tmp_path / ".cloverleaf-project.json"
+    assert state_path.exists()
+    settings = Settings(
+        CLOVERLEAF_WORKSPACE=tmp_path / "workspace",
+        AI_PROVIDER="disabled",
+    )
+    with TestClient(create_app(settings)) as restarted:
+        assert restarted.get("/api/project").json() == {
+            "workspace": str(other.resolve()),
+            "name": "other-project",
+            "main_file": "paper.tex",
+        }
+
 
 def test_project_folder_browser_lists_safe_choices(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -196,3 +210,37 @@ def test_loading_project_rebinds_codex_workspace(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert isinstance(client.app.state.assistant, CodexProvider)
         assert client.app.state.assistant.workspace == str(other.resolve())
+
+
+class RecordingCodexProvider(CodexProvider):
+    async def chat(
+        self,
+        messages: list[AssistantMessage],
+        context: AssistantContext,
+    ) -> AssistantResponse:
+        return AssistantResponse(message=f"{self.workspace}: {messages[-1].content}")
+
+    def for_workspace(self, workspace: Path) -> "RecordingCodexProvider":
+        return RecordingCodexProvider(self.model, str(workspace), self.codex_bin)
+
+
+def test_assistant_turn_defensively_uses_active_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("source", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+    provider = RecordingCodexProvider("model", "/stale")
+
+    with TestClient(create_app(settings, provider)) as client:
+        client.app.state.assistant = RecordingCodexProvider("model", "/stale")
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "where am I?"}],
+                "context": {},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["message"] == f"{workspace.resolve()}: where am I?"
+        assert client.app.state.assistant.workspace == str(workspace.resolve())
