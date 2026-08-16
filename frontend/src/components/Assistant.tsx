@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useState } from 'react'
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { Check, Send, X } from 'lucide-react'
 import type { ChatMessage, ProposedEdit } from '../types'
 
@@ -12,6 +12,12 @@ type Props = {
 export function Assistant({ messages, busy, onSend, onApplyEdit }: Props) {
   const [draft, setDraft] = useState('')
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
+  const messageListRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const messageList = messageListRef.current
+    if (messageList) messageList.scrollTop = messageList.scrollHeight
+  }, [busy, dismissed, messages])
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault()
@@ -35,7 +41,7 @@ export function Assistant({ messages, busy, onSend, onApplyEdit }: Props) {
         <span className={`status-dot ${busy ? 'compiling' : 'success'}`} title={busy ? 'Thinking' : 'Ready'} />
       </header>
       <div className="panel-body chat">
-        <div className="messages" aria-live="polite">
+        <div className="messages" aria-live="polite" ref={messageListRef}>
           {messages.length === 0 && (
             <p className="assistant-intro">
               Ask about the open manuscript, selected text, or active compiler diagnostics. Proposed edits always require review.

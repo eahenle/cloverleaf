@@ -30,6 +30,8 @@ CLOVERLEAF_MAIN_FILE=paper.tex
 
 `CLOVERLEAF_MAIN_FILE` must be a relative `.tex` path inside that workspace.
 
+While Cloverleaf is running, use **Load project** (the open-folder button in the Project panel) to switch to another local manuscript. The modal folder picker navigates the server's local filesystem with Up, Home, and Computer shortcuts and offers the selected folder's `.tex` files as compilation roots—no path entry is required. If the folder has no root-level `.tex` file, Cloverleaf creates a minimal `main.tex` automatically. The backend validates the selection before switching, waits for any active build to finish, clears project-specific editor and assistant state, and compiles the loaded manuscript. Runtime selections last until the server restarts; update `.env` to make one the default.
+
 ## Codex assistant
 
 Authenticate the installed Codex CLI before starting Cloverleaf:
@@ -48,6 +50,8 @@ CLOVERLEAF_CODEX_BIN=
 ```
 
 The backend uses the official [Codex Python SDK](https://developers.openai.com/codex/codex-sdk) and the machine's existing Codex login. It uses the authenticated local `codex` executable when available, with the SDK-pinned runtime as fallback. Set `CLOVERLEAF_CODEX_BIN` only when a specific executable is required.
+
+This checkout can pin the assistant to the personal multi-cli profile by setting `CLOVERLEAF_CODEX_BIN=scripts/codex-personal` in `.env`. The launcher runs `multi-cli codex/personal` while keeping app-server's JSON-RPC output clean. A future authentication settings flow should expose the active account, profile selection, logout, and device-code login in Cloverleaf itself; for now, authentication remains an explicit server-side setup step.
 
 Assistant turns run server-side with the Codex read-only sandbox. The browser sends manuscript context—not credentials—to FastAPI. Codex can return complete-file proposals, but Cloverleaf shows each proposal as a review card and requires confirmation before writing it.
 
@@ -84,7 +88,7 @@ make clean            # remove LaTeX build artifacts
 
 FastAPI exposes interactive API documentation at <http://127.0.0.1:8000/docs> while the backend is running.
 
-The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It serializes tests because they intentionally edit the same local manuscript, and it restores fixture content after destructive cases. It also captures ignored visual-validation screenshots under `screenshots/`.
+The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It starts isolated, non-reused test servers on ports 8010 and 5183 so it cannot change or stop an interactive development session. It serializes tests because they intentionally edit the same local manuscript, restores fixture content after destructive cases, and captures ignored visual-validation screenshots under `screenshots/`.
 
 ## Repository layout
 

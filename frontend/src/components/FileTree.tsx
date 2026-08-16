@@ -5,6 +5,7 @@ import {
   FilePlus2,
   FileText,
   Folder,
+  FolderOpen,
   FolderPlus,
   Pencil,
   Trash2,
@@ -15,6 +16,8 @@ type Props = {
   tree: TreeNode[]
   activePath: string | null
   onOpen: (path: string) => void
+  onLoadProject: () => void
+  loadDisabled: boolean
   onCreate: (type: 'file' | 'directory') => void
   onRename: (path: string) => void
   onDelete: (path: string) => void
@@ -26,7 +29,16 @@ function directoryPaths(nodes: TreeNode[]): string[] {
   )
 }
 
-export function FileTree({ tree, activePath, onOpen, onCreate, onRename, onDelete }: Props) {
+export function FileTree({
+  tree,
+  activePath,
+  onOpen,
+  onLoadProject,
+  loadDisabled,
+  onCreate,
+  onRename,
+  onDelete,
+}: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -102,6 +114,15 @@ export function FileTree({ tree, activePath, onOpen, onCreate, onRename, onDelet
       <header className="panel-header">
         <span>Project</span>
         <span className="panel-actions">
+          <button
+            type="button"
+            onClick={onLoadProject}
+            disabled={loadDisabled}
+            title="Load project"
+            aria-label="Load project"
+          >
+            <FolderOpen size={14} />
+          </button>
           <button
             type="button"
             onClick={() => onCreate('file')}

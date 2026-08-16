@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import httpx
 
 from .models import AssistantContext, AssistantMessage, AssistantResponse, ProposedEdit
+
+
+logger = logging.getLogger(__name__)
+
+CODEX_MAX_PROMPT_CHARS = 700_000
+PROJECT_TREE_MAX_CHARS = 80_000
+OPEN_FILE_MAX_CHARS = 300_000
+SELECTED_TEXT_MAX_CHARS = 100_000
+DIAGNOSTICS_MAX_CHARS = 40_000
+CONVERSATION_MAX_CHARS = 120_000
+LATEX_SUFFIXES = {".tex", ".bib", ".sty", ".cls", ".bst"}
 
 
 class AssistantProvider(ABC):
@@ -19,6 +32,125 @@ class AssistantProvider(ABC):
 
 class AssistantUnavailable(RuntimeError):
     pass
+
+
+def _truncate_middle(value: str, limit: int, label: str) -> str:
+    if len(value) <= limit:
+        return value
+    marker = f"\n… [{len(value) - limit:,} characters omitted from {label}] …\n"
+    available = max(0, limit - len(marker))
+    before = (available * 2) // 3
+    return value[:before] + marker + value[-(available - before) :]
+
+
+def _truncate_start(value: str, limit: int, label: str) -> str:
+    if len(value) <= limit:
+        return value
+    marker = f"… [{len(value) - limit:,} earlier characters omitted from {label}] …\n"
+    return marker + value[-max(0, limit - len(marker)) :]
+
+
+def _flatten_tree(context: AssistantContext) -> list[tuple[str, str]]:
+    flattened: list[tuple[str, str]] = []
+
+    def visit(nodes) -> None:
+        for node in nodes:
+            flattened.append((node.path, node.type))
+            visit(node.children)
+
+    visit(context.project_tree)
+    return flattened
+
+
+def _project_tree_summary(context: AssistantContext) -> str:
+    entries = _flatten_tree(context)
+
+    def priority(entry: tuple[str, str]) -> tuple[int, int, str]:
+        path, entry_type = entry
+        if path == context.open_file:
+            rank = 0
+        elif entry_type == "file" and Path(path).suffix.lower() in LATEX_SUFFIXES:
+            rank = 1
+        elif entry_type == "directory" and path.count("/") <= 1:
+            rank = 2
+        else:
+            rank = 3
+        return rank, path.count("/"), path.casefold()
+
+    ordered = sorted(entries, key=priority)
+    lines: list[str] = []
+    used = 0
+    for path, entry_type in ordered:
+        line = path + ("/" if entry_type == "directory" else "")
+        added = len(line) + (1 if lines else 0)
+        if used + added > PROJECT_TREE_MAX_CHARS:
+            break
+        lines.append(line)
+        used += added
+
+    omitted = len(entries) - len(lines)
+    heading = f"{len(lines):,} of {len(entries):,} entries"
+    if omitted:
+        heading += f"; {omitted:,} omitted after prioritizing manuscript files"
+    return heading + "\n" + "\n".join(lines)
+
+
+def build_codex_prompt(
+    messages: list[AssistantMessage], context: AssistantContext
+) -> str:
+    transcript = "\n\n".join(
+        f"{message.role.upper()}: {message.content}" for message in messages
+    )
+    transcript = _truncate_start(transcript, CONVERSATION_MAX_CHARS, "conversation")
+    open_file_content = _truncate_middle(
+        context.open_file_content, OPEN_FILE_MAX_CHARS, "open file"
+    )
+    selected_text = _truncate_middle(
+        context.selected_text or "(none)", SELECTED_TEXT_MAX_CHARS, "selection"
+    )
+    diagnostics = _truncate_middle(
+        json.dumps(
+            [diagnostic.model_dump() for diagnostic in context.diagnostics],
+            indent=2,
+        ),
+        DIAGNOSTICS_MAX_CHARS,
+        "compiler diagnostics",
+    )
+    prompt = (
+        "You are the manuscript assistant embedded in Cloverleaf, a local LaTeX editor. "
+        "Answer the latest user request using the project context. Be technically precise and concise. "
+        "You are in a read-only sandbox: do not edit files or claim changes were applied. "
+        "If a complete-file edit is useful, append a fenced JSON block tagged cloverleaf-edits "
+        "containing an array of objects with path, content, and summary.\n\n"
+        f"PROJECT TREE: {_project_tree_summary(context)}\n\n"
+        f"OPEN FILE: {context.open_file or '(none)'}\n"
+        f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
+        f"SELECTED TEXT:\n{selected_text}\n\n"
+        f"COMPILER DIAGNOSTICS:\n{diagnostics}\n\n"
+        f"CONVERSATION:\n{transcript}"
+    )
+    if len(prompt) > CODEX_MAX_PROMPT_CHARS:
+        raise AssistantUnavailable(
+            "The assistant request is too large even after compacting the project context. "
+            "Open a smaller source file or start a new assistant conversation and try again."
+        )
+    return prompt
+
+
+def _codex_failure_message(exc: Exception) -> str:
+    detail = str(exc).lower()
+    if "maximum length" in detail or "too large" in detail:
+        return (
+            "The assistant request is too large. Open a smaller source file or start a new "
+            "assistant conversation and try again."
+        )
+    if "timed out" in detail or "timeout" in detail:
+        return "Codex timed out while answering. Try again shortly."
+    if any(term in detail for term in ("unauthorized", "authentication", "not logged in")):
+        return "Codex authentication is unavailable. Run `codex login` and try again."
+    if isinstance(exc, FileNotFoundError):
+        return "The Codex executable could not be started. Run `make install` and try again."
+    return "Codex could not answer. Check the backend log for details and try again."
 
 
 class UnconfiguredProvider(AssistantProvider):
@@ -48,18 +180,7 @@ class CodexProvider(AssistantProvider):
                 "The Codex SDK is not installed. Run `make install` and restart Cloverleaf."
             ) from exc
 
-        transcript = "\n\n".join(
-            f"{message.role.upper()}: {message.content}" for message in messages
-        )
-        prompt = (
-            "You are the manuscript assistant embedded in Cloverleaf, a local LaTeX editor. "
-            "Answer the latest user request using the project context. Be technically precise and concise. "
-            "You are in a read-only sandbox: do not edit files or claim changes were applied. "
-            "If a complete-file edit is useful, append a fenced JSON block tagged cloverleaf-edits "
-            "containing an array of objects with path, content, and summary.\n\n"
-            f"PROJECT CONTEXT:\n{context.model_dump_json(indent=2)}\n\n"
-            f"CONVERSATION:\n{transcript}"
-        )
+        prompt = build_codex_prompt(messages, context)
         try:
             local_codex = self.codex_bin or shutil.which("codex")
             config = CodexConfig(codex_bin=local_codex) if local_codex else None
@@ -71,10 +192,12 @@ class CodexProvider(AssistantProvider):
                 )
                 result = await thread.run(prompt)
         except Exception as exc:
-            raise AssistantUnavailable(
-                "Codex could not answer. Confirm `codex login` is complete and try again."
-            ) from exc
+            logger.warning("Codex request failed (%s): %s", type(exc).__name__, exc)
+            raise AssistantUnavailable(_codex_failure_message(exc)) from exc
         return parse_response(result.final_response)
+
+    def for_workspace(self, workspace: Path) -> CodexProvider:
+        return CodexProvider(self.model, str(workspace), self.codex_bin)
 
 
 class OpenAICompatibleProvider(AssistantProvider):

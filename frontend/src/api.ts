@@ -3,7 +3,9 @@ import type {
   AssistantResponse,
   ChatMessage,
   CompileStatus,
+  DirectoryListing,
   FileContent,
+  ProjectInfo,
   TreeNode,
 } from './types'
 
@@ -29,6 +31,17 @@ function encodePath(path: string): string {
 
 export const api = {
   health: () => request<{ ok: boolean }>('/api/health'),
+  project: () => request<ProjectInfo>('/api/project'),
+  browseDirectories: (path?: string) => {
+    const query = path ? `?path=${encodeURIComponent(path)}` : ''
+    return request<DirectoryListing>(`/api/project/directories${query}`)
+  },
+  loadProject: (workspace: string, mainFile: string) =>
+    request<ProjectInfo>('/api/project/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace, main_file: mainFile }),
+    }),
   tree: () => request<TreeNode[]>('/api/project/tree'),
   read: (path: string) => request<FileContent>(`/api/files/${encodePath(path)}`),
   write: (path: string, content: string) =>

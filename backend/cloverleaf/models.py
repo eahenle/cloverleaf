@@ -28,6 +28,31 @@ class RenameEntry(BaseModel):
     new_path: str
 
 
+class LoadProject(BaseModel):
+    workspace: str
+    main_file: str = "main.tex"
+
+
+class ProjectInfo(BaseModel):
+    workspace: str
+    name: str
+    main_file: str
+
+
+class DirectoryEntry(BaseModel):
+    name: str
+    path: str
+
+
+class DirectoryListing(BaseModel):
+    path: str
+    parent: str | None
+    home: str
+    root: str
+    directories: list[DirectoryEntry] = Field(default_factory=list)
+    tex_files: list[str] = Field(default_factory=list)
+
+
 class Diagnostic(BaseModel):
     severity: Literal["error", "warning"]
     message: str

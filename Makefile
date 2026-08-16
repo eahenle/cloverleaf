@@ -1,4 +1,4 @@
-.PHONY: install browser-install dev backend frontend test test-e2e test-live-codex lint typecheck build compile clean
+.PHONY: install browser-install dev backend backend-test frontend test test-e2e test-live-codex lint typecheck build compile clean
 
 export UV_CACHE_DIR := $(CURDIR)/.uv-cache
 export PATH := /opt/homebrew/opt/texlive/bin:/Library/TeX/texbin:$(PATH)
@@ -15,6 +15,9 @@ dev:
 
 backend:
 	uv run uvicorn cloverleaf.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
+
+backend-test:
+	uv run uvicorn cloverleaf.main:app --app-dir backend --host 127.0.0.1 --port 8010
 
 frontend:
 	npm --prefix frontend run dev -- --host 127.0.0.1

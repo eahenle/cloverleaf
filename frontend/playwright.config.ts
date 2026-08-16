@@ -9,7 +9,7 @@ export default defineConfig({
   retries: 0,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: 'http://127.0.0.1:5183',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     viewport: { width: 1440, height: 900 },
@@ -20,18 +20,18 @@ export default defineConfig({
   }],
   webServer: [
     {
-      command: 'make -C .. backend',
-      url: 'http://127.0.0.1:8000/api/health',
+      command: 'make -C .. backend-test',
+      url: 'http://127.0.0.1:8010/api/health',
       timeout: 120_000,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       stdout: 'pipe',
       stderr: 'pipe',
     },
     {
-      command: 'npm run dev -- --host 127.0.0.1',
-      url: 'http://127.0.0.1:5173',
+      command: 'CLOVERLEAF_API_TARGET=http://127.0.0.1:8010 npm run dev -- --host 127.0.0.1 --port 5183 --strictPort',
+      url: 'http://127.0.0.1:5183',
       timeout: 120_000,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       stdout: 'pipe',
       stderr: 'pipe',
     },

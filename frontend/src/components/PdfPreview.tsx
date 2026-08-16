@@ -64,9 +64,9 @@ function PdfPage({ document, pageNumber, width, onRendered, onError }: PdfPagePr
   return <canvas ref={canvasRef} className="pdf-page" data-testid="pdf-page" aria-label={`PDF page ${pageNumber}`} />
 }
 
-type Props = { status: CompileStatus }
+type Props = { status: CompileStatus; projectKey: string | null }
 
-export function PdfPreview({ status }: Props) {
+export function PdfPreview({ status, projectKey }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef<PDFDocumentProxy | null>(null)
   const loadedRevisionRef = useRef(0)
@@ -87,6 +87,18 @@ export function PdfPreview({ status }: Props) {
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
+
+  useEffect(() => {
+    const previous = documentRef.current
+    documentRef.current = null
+    loadedRevisionRef.current = 0
+    restoredRevisionRef.current = 0
+    scrollRatioRef.current = 0
+    renderedPagesRef.current = new Set()
+    setLoaded(null)
+    setError('')
+    if (previous) void previous.destroy()
+  }, [projectKey])
 
   useEffect(() => {
     if (
@@ -168,7 +180,11 @@ export function PdfPreview({ status }: Props) {
     <section className="panel" aria-label="PDF preview">
       <header className="panel-header">
         <span>PDF preview</span>
-        {loaded && <span className="preview-pages">{loaded.document.numPages} pages</span>}
+        {loaded && (
+          <span className="preview-pages">
+            {loaded.document.numPages} {loaded.document.numPages === 1 ? 'page' : 'pages'}
+          </span>
+        )}
       </header>
       <div className="panel-body preview-body">
         <div className="pdf-scroll" ref={scrollRef} aria-busy={loading || status.state === 'compiling'}>

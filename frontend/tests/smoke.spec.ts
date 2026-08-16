@@ -1,4 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 type Status = { state: string; revision: number }
@@ -213,6 +215,102 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       await expect(page.getByRole('button', { name: 'live-check', exact: true })).toHaveCount(0)
     } finally {
       await request.delete('/api/files/live-check').catch(() => undefined)
+    }
+  })
+
+  test('projects can be picked, loaded, and bootstrapped', async ({ page, request }) => {
+    const initial = (await (await request.get('/api/project')).json()) as {
+      workspace: string
+      name: string
+      main_file: string
+    }
+    const temporary = await mkdtemp(path.join(os.tmpdir(), 'cloverleaf-project-'))
+    const canonicalTemporary = await realpath(temporary)
+    await mkdir(path.join(temporary, 'sections'))
+    await mkdir(path.join(temporary, 'empty-project'))
+    await writeFile(
+      path.join(temporary, 'paper.tex'),
+      '\\documentclass{article}\n\\begin{document}\nLoaded project proof.\n\\input{sections/note}\n\\end{document}\n',
+      'utf8',
+    )
+    await writeFile(path.join(temporary, 'sections', 'note.tex'), 'A second source file.\n', 'utf8')
+
+    try {
+      await page.goto('/')
+      await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })
+
+      await page.getByLabel('Load project').click()
+      let picker = page.getByRole('dialog', { name: 'Load project' })
+      await expect(picker).toBeVisible()
+      await expect(picker.locator('input')).toHaveCount(0)
+      await picker.getByRole('button', { name: 'Cancel' }).click()
+      await expect(picker).toHaveCount(0)
+      await expect(page.locator('.project-path')).toContainText(
+        `${initial.name} / ${initial.main_file}`,
+      )
+
+      await page.getByLabel('Load project').click()
+      picker = page.getByRole('dialog', { name: 'Load project' })
+      await expect(picker).toBeVisible()
+      await page.screenshot({
+        path: path.resolve(process.cwd(), '../screenshots/project-picker.png'),
+        fullPage: true,
+      })
+      await picker.getByRole('button', { name: 'Computer' }).click()
+      const filesystemRoot = path.parse(canonicalTemporary).root
+      const segments = path.relative(filesystemRoot, canonicalTemporary).split(path.sep).filter(Boolean)
+      for (const segment of segments) {
+        await picker.getByRole('button', { name: `Open folder ${segment}`, exact: true }).click()
+      }
+      await expect(picker.getByLabel('Compilation root')).toHaveValue('paper.tex')
+      await picker.getByRole('button', { name: 'Open project' }).click()
+      await expect(picker).toHaveCount(0)
+      await expect(page.locator('.project-path')).toContainText(
+        `${path.basename(temporary)} / paper.tex`,
+      )
+      await expect(page.locator('.cm-content')).toContainText('Loaded project proof')
+      await expect(page.getByRole('button', { name: 'note.tex', exact: true })).toBeVisible()
+      await expect(page.getByText('paper.pdf', { exact: true })).toHaveCount(0)
+      await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })
+      await expect(page.getByTestId('pdf-page')).toHaveCount(1, { timeout: 30_000 })
+      await expect(page.locator('.preview-pages')).toHaveText('1 page')
+      await expect.poll(() => pdfText(request), { timeout: 30_000 }).toContain('Loaded project proof')
+
+      const loaded = await (await request.get('/api/project')).json()
+      expect(loaded).toMatchObject({ workspace: canonicalTemporary, main_file: 'paper.tex' })
+
+      await page.screenshot({
+        path: path.resolve(process.cwd(), '../screenshots/loaded-project.png'),
+        fullPage: true,
+      })
+
+      await page.getByLabel('Load project').click()
+      picker = page.getByRole('dialog', { name: 'Load project' })
+      await picker.getByRole('button', { name: 'Open folder empty-project' }).click()
+      await expect(picker.getByLabel('Compilation root')).toHaveValue('main.tex')
+      await expect(picker.getByRole('option')).toHaveText('main.tex (will be created)')
+      await picker.getByRole('button', { name: 'Open project' }).click()
+      await expect(page.locator('.project-path')).toContainText('empty-project / main.tex')
+      await expect(page.locator('.cm-content')).toContainText('Start writing here.')
+      await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })
+      await expect(page.getByTestId('pdf-page')).toHaveCount(1, { timeout: 30_000 })
+      await expect.poll(() => pdfText(request), { timeout: 30_000 }).toContain('Start writing here.')
+      expect(
+        ((await (await request.get('/api/files/main.tex')).json()) as { content: string }).content,
+      ).toContain('\\documentclass{article}')
+
+      await page.screenshot({
+        path: path.resolve(process.cwd(), '../screenshots/created-main-project.png'),
+        fullPage: true,
+      })
+    } finally {
+      const restored = await request.post('/api/project/load', {
+        data: { workspace: initial.workspace, main_file: initial.main_file },
+      })
+      expect(restored.ok()).toBeTruthy()
+      await request.post('/api/compile')
+      await expect.poll(async () => (await status(request)).state, { timeout: 30_000 }).toBe('success')
+      await rm(temporary, { recursive: true, force: true })
     }
   })
 })

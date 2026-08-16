@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Response
@@ -21,7 +23,11 @@ from .models import (
     AssistantRequest,
     AssistantResponse,
     CreateEntry,
+    DirectoryEntry,
+    DirectoryListing,
     FileContent,
+    LoadProject,
+    ProjectInfo,
     RenameEntry,
 )
 from .workspace import Workspace, WorkspaceError
@@ -29,12 +35,25 @@ from .workspace import Workspace, WorkspaceError
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAIN_TEX = """\\documentclass{article}
+\\title{Untitled manuscript}
+\\author{}
+\\date{}
 
-def build_assistant(settings: Settings) -> AssistantProvider:
+\\begin{document}
+\\maketitle
+
+Start writing here.
+
+\\end{document}
+"""
+
+
+def build_assistant(settings: Settings, workspace: Path | None = None) -> AssistantProvider:
     if settings.ai_provider == "codex":
         return CodexProvider(
             settings.ai_model,
-            str(settings.workspace),
+            str(workspace or settings.workspace),
             settings.codex_bin or None,
         )
     if (
@@ -59,6 +78,9 @@ def create_app(
         app.state.workspace = Workspace(settings.workspace)
         app.state.compiler = Compiler(settings.workspace, settings.main_file)
         app.state.assistant = configured_assistant or build_assistant(settings)
+        app.state.settings = settings
+        app.state.main_file = settings.main_file
+        app.state.project_lock = asyncio.Lock()
         yield
 
     application = FastAPI(title="Cloverleaf", version="0.1.0", lifespan=lifespan)
@@ -80,6 +102,136 @@ def create_app(
     @application.get("/api/project/tree")
     async def get_tree(fs: Workspace = Depends(workspace)):
         return fs.tree()
+
+    def project_info() -> ProjectInfo:
+        root = application.state.workspace.root
+        return ProjectInfo(
+            workspace=str(root),
+            name=root.name or str(root),
+            main_file=application.state.main_file,
+        )
+
+    @application.get("/api/project", response_model=ProjectInfo)
+    async def get_project():
+        return project_info()
+
+    @application.get("/api/project/directories", response_model=DirectoryListing)
+    async def browse_project_directories(path: str | None = None):
+        try:
+            candidate = (
+                application.state.workspace.root
+                if path is None
+                else Path(path).expanduser()
+            )
+            if not candidate.is_absolute():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Folder picker paths must be absolute",
+                )
+            candidate = candidate.resolve()
+            if not candidate.exists():
+                raise HTTPException(status_code=404, detail="Directory does not exist")
+            if not candidate.is_dir():
+                raise HTTPException(status_code=400, detail="Path is not a directory")
+
+            directories: list[DirectoryEntry] = []
+            tex_files: list[str] = []
+            for entry in sorted(candidate.iterdir(), key=lambda item: item.name.lower()):
+                if entry.name.startswith(".") or entry.is_symlink():
+                    continue
+                try:
+                    if entry.is_dir():
+                        directories.append(
+                            DirectoryEntry(name=entry.name, path=str(entry.resolve()))
+                        )
+                    elif entry.is_file() and entry.suffix.lower() == ".tex":
+                        tex_files.append(entry.name)
+                except OSError:
+                    continue
+        except HTTPException:
+            raise
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="Directory is not readable") from exc
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Directory could not be opened") from exc
+
+        parent = candidate.parent if candidate.parent != candidate else None
+        return DirectoryListing(
+            path=str(candidate),
+            parent=str(parent) if parent else None,
+            home=str(Path.home().resolve()),
+            root=str(Path(candidate.anchor or "/").resolve()),
+            directories=directories,
+            tex_files=tex_files,
+        )
+
+    @application.post("/api/project/load", response_model=ProjectInfo)
+    async def load_project(body: LoadProject):
+        raw_workspace = body.workspace.strip()
+        candidate = Path(raw_workspace).expanduser()
+        if not raw_workspace or not candidate.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail="Project directory must be an absolute path",
+            )
+        candidate = candidate.resolve()
+        if not candidate.exists():
+            raise HTTPException(status_code=404, detail="Project directory does not exist")
+        if not candidate.is_dir():
+            raise HTTPException(status_code=400, detail="Project path must be a directory")
+        if not body.main_file.endswith(".tex"):
+            raise HTTPException(
+                status_code=400,
+                detail="Compilation root must be a relative .tex path",
+            )
+
+        next_workspace = Workspace(candidate)
+        create_main = False
+        try:
+            main_path = next_workspace.resolve(body.main_file, must_exist=True)
+        except FileNotFoundError as exc:
+            try:
+                direct_tex_files = [
+                    entry
+                    for entry in candidate.iterdir()
+                    if not entry.name.startswith(".")
+                    and not entry.is_symlink()
+                    and entry.is_file()
+                    and entry.suffix.lower() == ".tex"
+                ]
+            except OSError as browse_exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Project directory is not readable",
+                ) from browse_exc
+            if body.main_file == "main.tex" and not direct_tex_files:
+                main_path = next_workspace.resolve("main.tex")
+                create_main = True
+            else:
+                raise translate_error(exc) from exc
+        except Exception as exc:
+            raise translate_error(exc) from exc
+        if not create_main and not main_path.is_file():
+            raise HTTPException(status_code=400, detail="Compilation root must be a file")
+        main_file = main_path.relative_to(candidate).as_posix()
+
+        async with application.state.project_lock:
+            await application.state.compiler.finish()
+            if create_main and not main_path.exists():
+                next_workspace.create("main.tex", "file", DEFAULT_MAIN_TEX)
+            elif create_main and not main_path.is_file():
+                raise HTTPException(status_code=400, detail="Compilation root must be a file")
+            application.state.workspace = next_workspace
+            application.state.compiler = Compiler(candidate, main_file)
+            application.state.main_file = main_file
+            if configured_assistant is None:
+                application.state.assistant = build_assistant(
+                    application.state.settings,
+                    candidate,
+                )
+            elif isinstance(application.state.assistant, CodexProvider):
+                application.state.assistant = application.state.assistant.for_workspace(candidate)
+        return project_info()
 
     @application.get("/api/files/{path:path}", response_model=FileContent)
     async def get_file(path: str, fs: Workspace = Depends(workspace)):

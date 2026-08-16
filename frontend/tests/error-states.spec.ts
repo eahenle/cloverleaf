@@ -67,3 +67,29 @@ test('a missing PDF response produces a clear preview error', async ({ page }) =
   expect(consoleErrors).toHaveLength(1)
   expect(consoleErrors[0]).toContain('404')
 })
+
+test('assistant keeps the newest response and edit controls in view', async ({ page }) => {
+  await page.route('**/api/assistant/chat', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        message: Array.from({ length: 60 }, (_, index) => `Explanation line ${index + 1}`).join('\n'),
+        proposed_edits: [{
+          path: 'main.tex',
+          content: '\\documentclass{article}',
+          summary: 'A reviewable replacement',
+        }],
+      }),
+    }),
+  )
+
+  await page.goto('/')
+  await page.getByLabel('Message Codex').fill('Explain this and suggest an edit')
+  await page.getByLabel('Send message').click()
+  await expect(page.getByRole('button', { name: 'Apply' })).toBeInViewport()
+  await expect(page.getByRole('button', { name: 'Dismiss' })).toBeInViewport()
+  expect(await page.locator('.messages').evaluate((element) =>
+    Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop),
+  )).toBeLessThanOrEqual(1)
+})

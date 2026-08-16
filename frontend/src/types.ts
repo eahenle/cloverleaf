@@ -10,6 +10,21 @@ export type FileContent = {
   content: string
 }
 
+export type ProjectInfo = {
+  workspace: string
+  name: string
+  main_file: string
+}
+
+export type DirectoryListing = {
+  path: string
+  parent: string | null
+  home: string
+  root: string
+  directories: Array<{ name: string; path: string }>
+  tex_files: string[]
+}
+
 export type Diagnostic = {
   severity: 'error' | 'warning'
   message: string

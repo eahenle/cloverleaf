@@ -103,6 +103,12 @@ class Compiler:
             await self._task
         return self.status.model_copy(deep=True)
 
+    async def finish(self) -> None:
+        """Wait for already-requested builds without scheduling another one."""
+        task = self._task
+        if task and not task.done():
+            await task
+
     async def _run_requested(self) -> None:
         while self._pending:
             self._pending = False

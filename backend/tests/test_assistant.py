@@ -3,7 +3,12 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from cloverleaf.assistant import AssistantProvider, parse_response
+from cloverleaf.assistant import (
+    CODEX_MAX_PROMPT_CHARS,
+    AssistantProvider,
+    build_codex_prompt,
+    parse_response,
+)
 from cloverleaf.config import Settings
 from cloverleaf.main import create_app
 from cloverleaf.models import AssistantContext, AssistantMessage, AssistantResponse
@@ -32,6 +37,41 @@ def test_malformed_edit_block_remains_visible() -> None:
     response = parse_response(content)
     assert response.message == content
     assert response.proposed_edits == []
+
+
+def test_codex_prompt_compacts_large_project_tree() -> None:
+    context = AssistantContext(
+        project_tree=[
+            {
+                "name": "generated",
+                "path": "generated",
+                "type": "directory",
+                "children": [
+                    {
+                        "name": f"artifact-{index}.json",
+                        "path": f"generated/nested/artifact-{index}.json",
+                        "type": "file",
+                    }
+                    for index in range(30_000)
+                ],
+            },
+            {"name": "main.tex", "path": "main.tex", "type": "file"},
+        ],
+        open_file="main.tex",
+        open_file_content="A" * 400_000 + "END OF MANUSCRIPT",
+        selected_text="important selection",
+    )
+
+    prompt = build_codex_prompt(
+        [AssistantMessage(role="user", content="Explain the manuscript")], context
+    )
+
+    assert len(prompt) <= CODEX_MAX_PROMPT_CHARS
+    assert "main.tex" in prompt
+    assert "important selection" in prompt
+    assert "END OF MANUSCRIPT" in prompt
+    assert "omitted after prioritizing manuscript files" in prompt
+    assert "Explain the manuscript" in prompt
 
 
 class CapturingProvider(AssistantProvider):

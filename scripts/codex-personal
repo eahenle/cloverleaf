@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Run Codex through multi-cli's personal profile with JSON-RPC-clean stdout."""
+
+from __future__ import annotations
+
+import shutil
+import signal
+import subprocess
+import sys
+
+
+BANNER_PREFIX = "Launching OpenAI Codex CLI profile 'codex/personal'"
+
+
+def main() -> int:
+    multi_cli = shutil.which("multi-cli")
+    if multi_cli is None:
+        print("multi-cli is required to launch the codex/personal profile", file=sys.stderr)
+        return 127
+
+    process = subprocess.Popen(
+        [multi_cli, "codex/personal", *sys.argv[1:]],
+        stdin=sys.stdin,
+        stdout=subprocess.PIPE,
+        stderr=sys.stderr,
+        text=True,
+        bufsize=1,
+    )
+
+    def forward(signum: int, _frame: object) -> None:
+        if process.poll() is None:
+            process.send_signal(signum)
+
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGINT, forward)
+
+    assert process.stdout is not None
+    for line in process.stdout:
+        if line.startswith(BANNER_PREFIX):
+            continue
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    return process.wait()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

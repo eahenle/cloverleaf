@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from cloverleaf.assistant import CodexProvider
 from cloverleaf.config import Settings
 from cloverleaf.main import create_app
 
@@ -75,3 +76,123 @@ def test_health_and_missing_pdf_are_clear(tmp_path: Path) -> None:
         response = client.get("/api/pdf")
         assert response.status_code == 404
         assert response.json()["detail"] == "No successful PDF build is available yet"
+
+
+def test_project_can_be_loaded_at_runtime(tmp_path: Path) -> None:
+    other = tmp_path / "other-project"
+    (other / "chapters").mkdir(parents=True)
+    (other / "paper.tex").write_text("new manuscript", encoding="utf-8")
+    (other / "chapters" / "one.tex").write_text("chapter", encoding="utf-8")
+
+    with make_client(tmp_path) as client:
+        initial = client.get("/api/project").json()
+        assert initial["main_file"] == "main.tex"
+
+        response = client.post(
+            "/api/project/load",
+            json={"workspace": str(other), "main_file": "paper.tex"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "workspace": str(other.resolve()),
+            "name": "other-project",
+            "main_file": "paper.tex",
+        }
+        assert client.get("/api/files/paper.tex").json()["content"] == "new manuscript"
+        assert [node["name"] for node in client.get("/api/project/tree").json()] == [
+            "chapters",
+            "paper.tex",
+        ]
+        assert client.app.state.compiler.workspace == other.resolve()
+        assert client.app.state.compiler.main_file == "paper.tex"
+
+
+def test_project_folder_browser_lists_safe_choices(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    workspace = tmp_path / "workspace"
+    (workspace / "visible").mkdir()
+    (workspace / ".hidden").mkdir()
+    (workspace / "notes.txt").write_text("notes", encoding="utf-8")
+    try:
+        (workspace / "linked").symlink_to(workspace / "visible", target_is_directory=True)
+    except OSError:
+        pass
+
+    with client:
+        response = client.get("/api/project/directories", params={"path": str(workspace)})
+
+        assert response.status_code == 200
+        listing = response.json()
+        assert listing["path"] == str(workspace.resolve())
+        assert [entry["name"] for entry in listing["directories"]] == ["visible"]
+        assert listing["tex_files"] == ["main.tex"]
+        assert listing["parent"] == str(tmp_path.resolve())
+        assert Path(listing["home"]).is_absolute()
+        assert Path(listing["root"]).is_absolute()
+        assert client.get(
+            "/api/project/directories",
+            params={"path": "relative"},
+        ).status_code == 400
+        assert client.get(
+            "/api/project/directories",
+            params={"path": str(workspace / "main.tex")},
+        ).status_code == 400
+
+
+def test_loading_empty_project_creates_main_tex(tmp_path: Path) -> None:
+    empty = tmp_path / "empty-project"
+    empty.mkdir()
+
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/project/load",
+            json={"workspace": str(empty), "main_file": "main.tex"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["main_file"] == "main.tex"
+        content = (empty / "main.tex").read_text(encoding="utf-8")
+        assert "\\documentclass{article}" in content
+        assert "Start writing here." in content
+        assert client.get("/api/files/main.tex").json()["content"] == content
+
+
+def test_invalid_project_load_does_not_replace_current_project(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.tex"
+    outside.write_text("outside", encoding="utf-8")
+
+    with make_client(tmp_path) as client:
+        original = client.get("/api/project").json()
+        attempts = [
+            ({"workspace": "relative", "main_file": "main.tex"}, 400),
+            ({"workspace": str(tmp_path / "missing"), "main_file": "main.tex"}, 404),
+            ({"workspace": str(tmp_path), "main_file": "../outside.tex"}, 400),
+            ({"workspace": str(tmp_path), "main_file": "outside.txt"}, 400),
+            ({"workspace": str(tmp_path), "main_file": "missing.tex"}, 404),
+        ]
+        for payload, expected_status in attempts:
+            assert client.post("/api/project/load", json=payload).status_code == expected_status
+            assert client.get("/api/project").json() == original
+            assert client.get("/api/files/main.tex").json()["content"] == "hello"
+
+
+def test_loading_project_rebinds_codex_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("first", encoding="utf-8")
+    other = tmp_path / "second"
+    other.mkdir()
+    (other / "paper.tex").write_text("second", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="codex")
+
+    with TestClient(create_app(settings)) as client:
+        assert isinstance(client.app.state.assistant, CodexProvider)
+        response = client.post(
+            "/api/project/load",
+            json={"workspace": str(other), "main_file": "paper.tex"},
+        )
+
+        assert response.status_code == 200
+        assert isinstance(client.app.state.assistant, CodexProvider)
+        assert client.app.state.assistant.workspace == str(other.resolve())

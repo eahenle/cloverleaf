@@ -5,8 +5,9 @@ import { Assistant } from './components/Assistant'
 import { Editor } from './components/Editor'
 import { FileTree } from './components/FileTree'
 import { PdfPreview } from './components/PdfPreview'
+import { ProjectPicker } from './components/ProjectPicker'
 import { ProjectStatus } from './components/ProjectStatus'
-import type { ChatMessage, CompileStatus, ProposedEdit, TreeNode } from './types'
+import type { ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, TreeNode } from './types'
 
 const initialStatus: CompileStatus = {
   state: 'idle',
@@ -18,6 +19,7 @@ const initialStatus: CompileStatus = {
 type EditIntent = { id: number; path: string }
 
 export default function App() {
+  const [project, setProject] = useState<ProjectInfo | null>(null)
   const [tree, setTree] = useState<TreeNode[]>([])
   const [path, setPath] = useState<string | null>(null)
   const [content, setContent] = useState('')
@@ -28,6 +30,8 @@ export default function App() {
   const [status, setStatus] = useState<CompileStatus>(initialStatus)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [assistantBusy, setAssistantBusy] = useState(false)
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [toast, setToast] = useState('')
 
   const pathRef = useRef(path)
@@ -37,6 +41,7 @@ export default function App() {
   const saveCountRef = useRef(0)
   const toastTimerRef = useRef<number | null>(null)
   const initializedRef = useRef(false)
+  const switchingProjectRef = useRef(false)
 
   const updatePath = useCallback((nextPath: string | null) => {
     pathRef.current = nextPath
@@ -115,10 +120,12 @@ export default function App() {
   useEffect(() => {
     if (!editIntent) return
     const saveTimer = window.setTimeout(() => {
-      if (pathRef.current === editIntent.path) void saveCurrent(false).catch(showError)
+      if (!switchingProjectRef.current && pathRef.current === editIntent.path) {
+        void saveCurrent(false).catch(showError)
+      }
     }, 700)
     const compileTimer = window.setTimeout(() => {
-      if (pathRef.current !== editIntent.path) return
+      if (switchingProjectRef.current || pathRef.current !== editIntent.path) return
       void saveCurrent(true)
         .then(() => {
           setEditIntent((current) => (current?.id === editIntent.id ? null : current))
@@ -154,8 +161,10 @@ export default function App() {
     initializedRef.current = true
     void (async () => {
       await api.health()
+      const currentProject = await api.project()
+      setProject(currentProject)
       await refreshTree()
-      await openFile('main.tex')
+      await openFile(currentProject.main_file)
       await requestCompile()
     })().catch(showError)
   }, [openFile, refreshTree, requestCompile, showError])
@@ -176,6 +185,30 @@ export default function App() {
       await refreshTree()
       if (type === 'file') await openFile(nextPath)
     })().catch(showError)
+  }
+
+  const loadProject = async (workspace: string, mainFile: string) => {
+    switchingProjectRef.current = true
+    setProjectLoading(true)
+    try {
+      if (pathRef.current) await saveCurrent(false)
+      setEditIntent(null)
+      const loaded = await api.loadProject(workspace, mainFile)
+      const nextTree = await api.tree()
+      const file = await api.read(loaded.main_file)
+      setProject(loaded)
+      setTree(nextTree)
+      updatePath(file.path)
+      updateContent(file.content)
+      updateDirty(false)
+      setSelectedText('')
+      setMessages([])
+      setStatus(initialStatus)
+      await requestCompile()
+    } finally {
+      switchingProjectRef.current = false
+      setProjectLoading(false)
+    }
   }
 
   const renameEntry = (oldPath: string) => {
@@ -258,7 +291,9 @@ export default function App() {
     <main className="app-shell">
       <div className="topbar">
         <span className="wordmark">cloverleaf</span>
-        <span className="project-path">workspace / {path ?? '—'}</span>
+        <span className="project-path" title={project?.workspace}>
+          {project?.name ?? 'workspace'} / {path ?? '—'}
+        </span>
         <span className={`topbar-build ${status.state}`}>
           <span className={`status-dot ${status.state}`} /> {status.state}
         </span>
@@ -271,6 +306,8 @@ export default function App() {
                 tree={tree}
                 activePath={path}
                 onOpen={(nextPath) => void openFile(nextPath).catch(showError)}
+                onLoadProject={() => setProjectPickerOpen(true)}
+                loadDisabled={!project || assistantBusy || projectLoading}
                 onCreate={createEntry}
                 onRename={renameEntry}
                 onDelete={deleteEntry}
@@ -297,7 +334,7 @@ export default function App() {
         <Panel defaultSize={33} minSize={23}>
           <PanelGroup direction="vertical" autoSaveId="cloverleaf-right">
             <Panel defaultSize={59} minSize={28}>
-              <PdfPreview status={status} />
+              <PdfPreview status={status} projectKey={project?.workspace ?? null} />
             </Panel>
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize preview and assistant panels" />
             <Panel defaultSize={41} minSize={24}>
@@ -311,6 +348,13 @@ export default function App() {
           </PanelGroup>
         </Panel>
       </PanelGroup>
+      {projectPickerOpen && project && (
+        <ProjectPicker
+          currentProject={project}
+          onClose={() => setProjectPickerOpen(false)}
+          onLoad={loadProject}
+        />
+      )}
       {toast && <div className="toast" role="alert">{toast}</div>}
     </main>
   )
