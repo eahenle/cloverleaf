@@ -53,7 +53,7 @@ The backend uses the official [Codex Python SDK](https://developers.openai.com/c
 
 This checkout can pin the assistant to the personal multi-cli profile by setting `CLOVERLEAF_CODEX_BIN=scripts/codex-personal` in `.env`. The launcher runs `multi-cli codex/personal` while keeping app-server's JSON-RPC output clean. A future authentication settings flow should expose the active account, profile selection, logout, and device-code login in Cloverleaf itself; for now, authentication remains an explicit server-side setup step.
 
-Assistant turns run server-side with the Codex read-only sandbox. The browser sends manuscript context—not credentials—to FastAPI. Codex can return complete-file proposals, but Cloverleaf shows each proposal as a review card and requires confirmation before writing it.
+Assistant turns run server-side with the Codex read-only sandbox. Cloverleaf automatically includes the active file, selected text, and compiler diagnostics, but it does not serialize the project tree into the request. Codex starts in the selected workspace and inspects other files on demand with its read-only tools. The browser never receives provider credentials. Codex can return complete-file proposals, but Cloverleaf shows each proposal as a review card and requires confirmation before writing it. Explicitly attaching additional files is a future enhancement.
 
 An OpenAI-compatible fallback remains behind the same provider interface:
 

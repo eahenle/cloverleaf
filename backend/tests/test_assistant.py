@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from cloverleaf.assistant import (
     CODEX_MAX_PROMPT_CHARS,
     AssistantProvider,
+    OpenAICompatibleProvider,
     build_codex_prompt,
     parse_response,
 )
@@ -39,24 +41,8 @@ def test_malformed_edit_block_remains_visible() -> None:
     assert response.proposed_edits == []
 
 
-def test_codex_prompt_compacts_large_project_tree() -> None:
+def test_codex_prompt_sends_open_file_without_project_tree() -> None:
     context = AssistantContext(
-        project_tree=[
-            {
-                "name": "generated",
-                "path": "generated",
-                "type": "directory",
-                "children": [
-                    {
-                        "name": f"artifact-{index}.json",
-                        "path": f"generated/nested/artifact-{index}.json",
-                        "type": "file",
-                    }
-                    for index in range(30_000)
-                ],
-            },
-            {"name": "main.tex", "path": "main.tex", "type": "file"},
-        ],
         open_file="main.tex",
         open_file_content="A" * 400_000 + "END OF MANUSCRIPT",
         selected_text="important selection",
@@ -70,8 +56,67 @@ def test_codex_prompt_compacts_large_project_tree() -> None:
     assert "main.tex" in prompt
     assert "important selection" in prompt
     assert "END OF MANUSCRIPT" in prompt
-    assert "omitted after prioritizing manuscript files" in prompt
     assert "Explain the manuscript" in prompt
+    assert "PROJECT TREE" not in prompt
+    assert "Inspect files in the current workspace" in prompt
+
+
+def test_assistant_prompt_keeps_latest_message_with_large_history() -> None:
+    messages = [
+        AssistantMessage(role="user", content=f"old request {index} " + "x" * 20_000)
+        for index in range(100)
+    ]
+    messages.append(AssistantMessage(role="user", content="LATEST REQUEST MUST SURVIVE"))
+    context = AssistantContext(
+        open_file="main.tex",
+        open_file_content="manuscript",
+    )
+
+    prompt = build_codex_prompt(messages, context)
+
+    assert len(prompt) <= CODEX_MAX_PROMPT_CHARS
+    assert "LATEST REQUEST MUST SURVIVE" in prompt
+    assert "earlier characters omitted from conversation" in prompt
+    assert "old request 0" not in prompt
+
+
+async def test_openai_compatible_provider_uses_bounded_context(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "bounded"}}]}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+            return None
+
+        async def post(self, _url: str, **kwargs):
+            captured.update(kwargs["json"])
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    provider = OpenAICompatibleProvider("http://provider.invalid", "secret", "model")
+    context = AssistantContext(
+        open_file="main.tex",
+        open_file_content="source",
+    )
+
+    response = await provider.chat(
+        [AssistantMessage(role="user", content="x" * 2_000_000 + "LATEST")],
+        context,
+    )
+
+    assert response.message == "bounded"
+    provider_prompt = captured["messages"][-1]["content"]
+    assert len(provider_prompt) <= CODEX_MAX_PROMPT_CHARS
+    assert provider_prompt.endswith("LATEST")
 
 
 class CapturingProvider(AssistantProvider):
@@ -99,7 +144,6 @@ def test_assistant_receives_complete_context_without_credentials(tmp_path: Path)
     body = {
         "messages": [{"role": "user", "content": "Explain this"}],
         "context": {
-            "project_tree": [{"name": "main.tex", "path": "main.tex", "type": "file"}],
             "open_file": "main.tex",
             "open_file_content": "manuscript",
             "selected_text": "script",

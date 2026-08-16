@@ -52,7 +52,6 @@ export type ChatMessage = {
 }
 
 export type AssistantContext = {
-  project_tree: TreeNode[]
   open_file: string | null
   open_file_content: string
   selected_text: string | null

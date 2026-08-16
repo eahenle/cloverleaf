@@ -250,7 +250,6 @@ export default function App() {
     setAssistantBusy(true)
     try {
       const result = await api.chat(next, {
-        project_tree: tree,
         open_file: pathRef.current,
         open_file_content: contentRef.current,
         selected_text: selectedText || null,

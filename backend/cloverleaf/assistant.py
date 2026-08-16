@@ -14,12 +14,10 @@ from .models import AssistantContext, AssistantMessage, AssistantResponse, Propo
 logger = logging.getLogger(__name__)
 
 CODEX_MAX_PROMPT_CHARS = 700_000
-PROJECT_TREE_MAX_CHARS = 80_000
 OPEN_FILE_MAX_CHARS = 300_000
 SELECTED_TEXT_MAX_CHARS = 100_000
 DIAGNOSTICS_MAX_CHARS = 40_000
 CONVERSATION_MAX_CHARS = 120_000
-LATEX_SUFFIXES = {".tex", ".bib", ".sty", ".cls", ".bst"}
 
 
 class AssistantProvider(ABC):
@@ -50,53 +48,11 @@ def _truncate_start(value: str, limit: int, label: str) -> str:
     return marker + value[-max(0, limit - len(marker)) :]
 
 
-def _flatten_tree(context: AssistantContext) -> list[tuple[str, str]]:
-    flattened: list[tuple[str, str]] = []
-
-    def visit(nodes) -> None:
-        for node in nodes:
-            flattened.append((node.path, node.type))
-            visit(node.children)
-
-    visit(context.project_tree)
-    return flattened
-
-
-def _project_tree_summary(context: AssistantContext) -> str:
-    entries = _flatten_tree(context)
-
-    def priority(entry: tuple[str, str]) -> tuple[int, int, str]:
-        path, entry_type = entry
-        if path == context.open_file:
-            rank = 0
-        elif entry_type == "file" and Path(path).suffix.lower() in LATEX_SUFFIXES:
-            rank = 1
-        elif entry_type == "directory" and path.count("/") <= 1:
-            rank = 2
-        else:
-            rank = 3
-        return rank, path.count("/"), path.casefold()
-
-    ordered = sorted(entries, key=priority)
-    lines: list[str] = []
-    used = 0
-    for path, entry_type in ordered:
-        line = path + ("/" if entry_type == "directory" else "")
-        added = len(line) + (1 if lines else 0)
-        if used + added > PROJECT_TREE_MAX_CHARS:
-            break
-        lines.append(line)
-        used += added
-
-    omitted = len(entries) - len(lines)
-    heading = f"{len(lines):,} of {len(entries):,} entries"
-    if omitted:
-        heading += f"; {omitted:,} omitted after prioritizing manuscript files"
-    return heading + "\n" + "\n".join(lines)
-
-
 def build_codex_prompt(
-    messages: list[AssistantMessage], context: AssistantContext
+    messages: list[AssistantMessage],
+    context: AssistantContext,
+    *,
+    can_inspect_workspace: bool = True,
 ) -> str:
     transcript = "\n\n".join(
         f"{message.role.upper()}: {message.content}" for message in messages
@@ -116,13 +72,19 @@ def build_codex_prompt(
         DIAGNOSTICS_MAX_CHARS,
         "compiler diagnostics",
     )
+    runtime_guidance = (
+        "Inspect files in the current workspace with read-only tools whenever more context is needed; "
+        "Cloverleaf intentionally does not serialize the project tree into the request. "
+        if can_inspect_workspace
+        else "Use the supplied active-file context; no project tree is serialized into the request. "
+    )
     prompt = (
         "You are the manuscript assistant embedded in Cloverleaf, a local LaTeX editor. "
         "Answer the latest user request using the project context. Be technically precise and concise. "
         "You are in a read-only sandbox: do not edit files or claim changes were applied. "
+        f"{runtime_guidance}"
         "If a complete-file edit is useful, append a fenced JSON block tagged cloverleaf-edits "
         "containing an array of objects with path, content, and summary.\n\n"
-        f"PROJECT TREE: {_project_tree_summary(context)}\n\n"
         f"OPEN FILE: {context.open_file or '(none)'}\n"
         f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
         f"SELECTED TEXT:\n{selected_text}\n\n"
@@ -209,6 +171,7 @@ class OpenAICompatibleProvider(AssistantProvider):
     async def chat(
         self, messages: list[AssistantMessage], context: AssistantContext
     ) -> AssistantResponse:
+        prompt = build_codex_prompt(messages, context, can_inspect_workspace=False)
         payload = {
             "model": self.model,
             "messages": [
@@ -220,8 +183,7 @@ class OpenAICompatibleProvider(AssistantProvider):
                         "cloverleaf-edits JSON array with path, content, and summary."
                     ),
                 },
-                {"role": "system", "content": context.model_dump_json(indent=2)},
-                *[message.model_dump() for message in messages],
+                {"role": "user", "content": prompt},
             ],
         }
         async with httpx.AsyncClient(timeout=90) as client:

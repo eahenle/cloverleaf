@@ -69,8 +69,10 @@ test('a missing PDF response produces a clear preview error', async ({ page }) =
 })
 
 test('assistant keeps the newest response and edit controls in view', async ({ page }) => {
-  await page.route('**/api/assistant/chat', (route) =>
-    route.fulfill({
+  let requestContext: Record<string, unknown> | undefined
+  await page.route('**/api/assistant/chat', (route) => {
+    requestContext = (route.request().postDataJSON() as { context: Record<string, unknown> }).context
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
@@ -81,8 +83,8 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
           summary: 'A reviewable replacement',
         }],
       }),
-    }),
-  )
+    })
+  })
 
   await page.goto('/')
   await page.getByLabel('Message Codex').fill('Explain this and suggest an edit')
@@ -92,4 +94,5 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
   expect(await page.locator('.messages').evaluate((element) =>
     Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop),
   )).toBeLessThanOrEqual(1)
+  expect(requestContext).not.toHaveProperty('project_tree')
 })

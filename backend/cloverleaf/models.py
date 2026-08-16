@@ -73,7 +73,6 @@ class AssistantMessage(BaseModel):
 
 
 class AssistantContext(BaseModel):
-    project_tree: list[TreeNode]
     open_file: str | None = None
     open_file_content: str = ""
     selected_text: str | None = None

@@ -127,6 +127,7 @@ test('authenticated Codex uses manuscript context and gates proposed edits', asy
       const encoded = JSON.stringify(payload)
       expect(encoded).not.toMatch(/AI_API_KEY|Authorization|Bearer |access_token|refresh_token/i)
       expect(Object.keys(payload as Record<string, unknown>).sort()).toEqual(['context', 'messages'])
+      expect((payload as { context: Record<string, unknown> }).context).not.toHaveProperty('project_tree')
     }
   } finally {
     await request.put('/api/files/sections/introduction.tex', {
