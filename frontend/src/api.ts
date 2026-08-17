@@ -161,11 +161,11 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, content, version }),
     }),
-  create: (path: string, type: 'file' | 'directory') =>
+  create: (path: string, type: 'file' | 'directory', content = '') =>
     request<{ ok: boolean }>('/api/files', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, type }),
+      body: JSON.stringify({ path, type, content }),
     }),
   rename: (path: string, newPath: string) =>
     request<{ ok: boolean }>('/api/files', {
@@ -175,6 +175,17 @@ export const api = {
     }),
   delete: (path: string) =>
     request<void>(`/api/files/${encodePath(path)}`, { method: 'DELETE' }),
+  applyEdits: (edits: Array<{
+    path: string
+    content: string
+    version: string | null
+    is_new: boolean
+  }>) =>
+    request<{ files: FileContent[] }>('/api/files/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ edits }),
+    }),
   compile: () => request<CompileStatus>('/api/compile', { method: 'POST' }),
   compileStatus: () => request<CompileStatus>('/api/compile/status'),
   chat: (

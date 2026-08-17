@@ -8,10 +8,10 @@ type Props = {
   busy: boolean
   progress: AssistantProgress | null
   onSend: (message: string) => void
-  onApplyEdit: (edit: ProposedEdit) => Promise<boolean>
+  onApplyEdits: (edits: ProposedEdit[]) => Promise<boolean>
 }
 
-export function Assistant({ messages, busy, progress, onSend, onApplyEdit }: Props) {
+export function Assistant({ messages, busy, progress, onSend, onApplyEdits }: Props) {
   const [draft, setDraft] = useState('')
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [activeTab, setActiveTab] = useState<'codex' | 'terminal'>('codex')
@@ -76,42 +76,98 @@ export function Assistant({ messages, busy, progress, onSend, onApplyEdit }: Pro
           <div className="messages" aria-live="polite" ref={messageListRef}>
             {messages.length === 0 && (
               <p className="assistant-intro">
-                Ask about the open manuscript, selected text, or active compiler diagnostics. Proposed edits always require review.
+                Ask Codex to inspect or edit the LaTeX project. File changes arrive as reviewable edits, never hidden workspace mutations.
               </p>
             )}
-            {messages.map((message, messageIndex) => (
-              <div className={`message ${message.role}`} key={`${message.role}-${messageIndex}`}>
-                {message.content}
-                {message.edits?.map((edit, editIndex) => {
-                  const key = `${messageIndex}-${editIndex}`
-                  if (dismissed.has(key)) return null
-                  return (
-                    <div className="proposed-edit" key={key}>
-                      <strong>{edit.path}</strong>
-                      <span>{edit.summary}</span>
-                      <div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void onApplyEdit(edit).then((applied) => {
-                              if (applied) setDismissed((current) => new Set(current).add(key))
+            {messages.map((message, messageIndex) => {
+              const visibleEdits = (message.edits ?? [])
+                .map((edit, editIndex) => ({ edit, key: `${messageIndex}-${editIndex}` }))
+                .filter(({ key }) => !dismissed.has(key))
+              return (
+                <div className={`message ${message.role}`} key={`${message.role}-${messageIndex}`}>
+                  {message.content}
+                  {visibleEdits.length > 1 && (
+                    <div className="edit-batch-actions">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void onApplyEdits(visibleEdits.map(({ edit }) => edit)).then((applied) => {
+                            if (!applied) return
+                            setDismissed((current) => {
+                              const next = new Set(current)
+                              visibleEdits.forEach(({ key }) => next.add(key))
+                              return next
                             })
+                          })
+                        }}
+                      >
+                        <Check size={12} /> Apply all {visibleEdits.length} edits
+                      </button>
+                    </div>
+                  )}
+                  {visibleEdits.map(({ edit, key }) => {
+                    return (
+                      <div className="proposed-edit" key={key}>
+                        <strong>{edit.path}</strong>
+                        <span>{edit.summary}</span>
+                        <div className="edit-actions">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void onApplyEdits([edit]).then((applied) => {
+                                if (applied) setDismissed((current) => new Set(current).add(key))
+                              })
+                            }}
+                          >
+                            <Check size={12} /> Apply
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDismissed((current) => new Set(current).add(key))}
+                          >
+                            <X size={12} /> Dismiss
+                          </button>
+                        </div>
+                        <details
+                          className="edit-review"
+                          onToggle={(event) => {
+                            if (event.currentTarget.open) {
+                              const card = event.currentTarget.parentElement
+                              window.requestAnimationFrame(() => {
+                                card?.scrollIntoView({ block: 'nearest' })
+                              })
+                            }
                           }}
                         >
-                          <Check size={12} /> Apply
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDismissed((current) => new Set(current).add(key))}
-                        >
-                          <X size={12} /> Dismiss
-                        </button>
+                          <summary>Review {edit.replacements?.length ? 'changes' : edit.is_new ? 'new file' : 'replacement'}</summary>
+                          {edit.replacements?.length ? (
+                            <div className="replacement-list">
+                              {edit.replacements.map((replacement, replacementIndex) => (
+                                <div className="replacement-pair" key={replacementIndex}>
+                                  {edit.replacements && edit.replacements.length > 1 && (
+                                    <strong>Change {replacementIndex + 1}</strong>
+                                  )}
+                                  {!edit.is_new && (
+                                    <>
+                                      <span className="replacement-label removed">Before</span>
+                                      <pre>{replacement.old_text}</pre>
+                                    </>
+                                  )}
+                                  <span className="replacement-label added">{edit.is_new ? 'New file' : 'After'}</span>
+                                  <pre>{replacement.new_text}</pre>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <pre>{edit.content}</pre>
+                          )}
+                        </details>
                       </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
+                    )
+                  })}
+                </div>
+              )
+            })}
             {busy && (
               <AssistantActivity progress={progress} now={now} />
             )}
@@ -121,7 +177,7 @@ export function Assistant({ messages, busy, progress, onSend, onApplyEdit }: Pro
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={keyDown}
-              placeholder="Ask about the manuscript…"
+              placeholder="Ask Codex to edit or inspect…"
               aria-label="Message Codex"
               rows={2}
             />

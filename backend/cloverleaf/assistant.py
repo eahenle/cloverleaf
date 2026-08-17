@@ -20,7 +20,76 @@ CODEX_MAX_PROMPT_CHARS = 700_000
 OPEN_FILE_MAX_CHARS = 300_000
 SELECTED_TEXT_MAX_CHARS = 100_000
 DIAGNOSTICS_MAX_CHARS = 40_000
+COMPILE_LOG_MAX_CHARS = 60_000
 CONVERSATION_MAX_CHARS = 120_000
+
+ASSISTANT_DEVELOPER_INSTRUCTIONS = """You are the project agent embedded in Cloverleaf, a local LaTeX research-authoring IDE.
+
+Your standing objective is to advance the project's main LaTeX document toward an accurate, coherent, polished manuscript that compiles successfully. Treat the manuscript as part of the surrounding research project: inspect relevant project files before answering when the supplied context is insufficient.
+
+Act instead of merely advising. When the user asks for a change, or when completing the request clearly requires a file change, produce actual exact text replacements in `proposed_edits`. Do not put suggested wording, patches, replacement snippets, or instructions for the user to carry out in the conversational `message`. The `message` should only summarize what you changed, explain an answer that genuinely requires no file change, or state a concrete blocker.
+
+Preserve valid LaTeX structure, project conventions, citations, labels, references, and includes. Prefer focused edits over unrelated rewrites. Use compiler diagnostics and the compilation root to diagnose failures. If the user asks only a question or explicitly asks for an explanation, answer it directly without manufacturing an edit.
+
+You have read-only project access. Inspect files with runtime tools, but do not claim to have written the live workspace. Cloverleaf turns every item in `proposed_edits` into a review card and writes it only after the user confirms. Each proposed edit must contain a visible relative project path, a concise summary, and the smallest practical sequence of exact `old_text` to `new_text` replacements. Every `old_text` for an existing file must match exactly once when applied in order; include enough surrounding text to make it unique, but never emit the complete file merely to change a small region. To create a file, use one replacement whose `old_text` is empty and whose `new_text` is the complete new file. Never expose credentials, authentication data, hidden files, or files outside the project.
+"""
+
+ASSISTANT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "message": {
+            "type": "string",
+            "description": (
+                "A concise result summary, direct answer, or blocker. Never include patches, "
+                "replacement manuscript text, or instructions for edits represented below."
+            ),
+        },
+        "proposed_edits": {
+            "type": "array",
+            "maxItems": 20,
+            "description": (
+                "Actual compact text replacements required to fulfill the user's request. "
+                "Use an empty array only when no file change is requested or possible."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Visible relative path inside the active project.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Concise description of the concrete file change.",
+                    },
+                    "replacements": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "description": (
+                            "Ordered exact text replacements. Existing-file old_text values "
+                            "must each match exactly once. For a new file, use one item with "
+                            "empty old_text and the complete file in new_text."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_text": {"type": "string"},
+                                "new_text": {"type": "string"},
+                            },
+                            "required": ["old_text", "new_text"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["path", "summary", "replacements"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["message", "proposed_edits"],
+    "additionalProperties": False,
+}
 
 
 class AssistantProvider(ABC):
@@ -85,24 +154,25 @@ def build_codex_prompt(
         DIAGNOSTICS_MAX_CHARS,
         "compiler diagnostics",
     )
+    compile_log = _truncate_start(
+        context.compile_log, COMPILE_LOG_MAX_CHARS, "compiler log"
+    )
     runtime_guidance = (
-        "Inspect files in the current workspace with read-only tools whenever more context is needed; "
-        "Cloverleaf intentionally does not serialize the project tree into the request. "
+        "You can inspect the current workspace with read-only runtime tools. Cloverleaf "
+        "intentionally does not serialize the project tree into this request."
         if can_inspect_workspace
-        else "Use the supplied active-file context; no project tree is serialized into the request. "
+        else "No project tools or serialized project tree are available for this request."
     )
     prompt = (
-        "You are the manuscript assistant embedded in Cloverleaf, a local LaTeX editor. "
-        "Answer the latest user request using the project context. Be technically precise and concise. "
-        "You are in a read-only sandbox: do not edit files or claim changes were applied. "
-        f"{runtime_guidance}"
-        "If a complete-file edit is useful, append a fenced JSON block tagged cloverleaf-edits "
-        "containing an array of objects with path, content, and summary.\n\n"
+        f"RUNTIME ACCESS: {runtime_guidance}\n"
         f"WORKSPACE ROOT: {workspace_root or '(not available)'}\n"
+        f"COMPILATION ROOT: {context.main_file or '(not available)'}\n"
+        f"COMPILE STATE: {context.compile_state}\n"
         f"OPEN FILE: {context.open_file or '(none)'}\n"
         f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
         f"SELECTED TEXT:\n{selected_text}\n\n"
         f"COMPILER DIAGNOSTICS:\n{diagnostics}\n\n"
+        f"COMPILER LOG TAIL:\n{compile_log or '(none)'}\n\n"
         f"CONVERSATION:\n{transcript}"
     )
     if len(prompt) > CODEX_MAX_PROMPT_CHARS:
@@ -139,7 +209,7 @@ class UnconfiguredProvider(AssistantProvider):
 
 
 class CodexProvider(AssistantProvider):
-    """Read-only Codex adapter; Cloverleaf remains responsible for applying edits."""
+    """Project-aware Codex adapter; Cloverleaf remains responsible for applying edits."""
 
     def __init__(self, model: str, workspace: str, codex_bin: str | None = None):
         self.model = model
@@ -175,9 +245,11 @@ class CodexProvider(AssistantProvider):
                     model=self.model,
                     sandbox=Sandbox.read_only,
                     cwd=self.workspace,
+                    developer_instructions=ASSISTANT_DEVELOPER_INSTRUCTIONS,
+                    ephemeral=True,
                 )
                 progress("submitting", "Sending the manuscript request…")
-                turn = await thread.turn(prompt)
+                turn = await thread.turn(prompt, output_schema=ASSISTANT_OUTPUT_SCHEMA)
                 progress("working", "Codex accepted the request and is working…")
                 final_response = await _consume_codex_turn(turn, progress)
         except Exception as exc:
@@ -220,7 +292,7 @@ def codex_event_progress(event: object) -> tuple[str, str] | None:
     if kind == "plan":
         return "planning", "Planning the response…"
     if kind == "agentMessage":
-        return "responding", "Drafting the response…"
+        return "responding", "Preparing the answer and reviewable file edits…"
     return None
 
 
@@ -284,11 +356,9 @@ class OpenAICompatibleProvider(AssistantProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are Cloverleaf's manuscript assistant. Use the supplied project context. "
-                        "Never claim to apply edits. Proposed complete-file edits must be a fenced "
-                        "cloverleaf-edits JSON array with path, content, and summary."
-                    ),
+                    "content": ASSISTANT_DEVELOPER_INSTRUCTIONS
+                    + "\nReturn one JSON object that follows Cloverleaf's structured response "
+                    "shape: `message` plus a `proposed_edits` array. Do not use a code fence.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -308,6 +378,13 @@ class OpenAICompatibleProvider(AssistantProvider):
 
 
 def parse_response(content: str) -> AssistantResponse:
+    stripped = content.strip()
+    if stripped.startswith("{"):
+        try:
+            return AssistantResponse.model_validate(json.loads(stripped))
+        except (ValueError, TypeError):
+            pass
+
     marker = "```cloverleaf-edits"
     if marker not in content:
         return AssistantResponse(message=content.strip())

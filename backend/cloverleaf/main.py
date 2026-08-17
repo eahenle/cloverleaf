@@ -22,6 +22,8 @@ from .assistant import (
 from .compiler import Compiler
 from .config import Settings, get_settings
 from .models import (
+    ApplyEditsRequest,
+    ApplyEditsResponse,
     AssistantRequest,
     AssistantProgress,
     AssistantResponse,
@@ -31,6 +33,7 @@ from .models import (
     FileContent,
     LoadProject,
     ProjectInfo,
+    ProposedEdit,
     RenameEntry,
 )
 from .workspace import FileChangedError, Workspace, WorkspaceError
@@ -406,6 +409,28 @@ def create_app(
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @application.post("/api/files/apply", response_model=ApplyEditsResponse)
+    async def apply_reviewed_edits(
+        body: ApplyEditsRequest,
+        fs: Workspace = Depends(workspace),
+    ):
+        try:
+            async with application.state.project_lock:
+                results = fs.apply_edits(
+                    [
+                        (edit.path, edit.content, edit.version, edit.is_new)
+                        for edit in body.edits
+                    ]
+                )
+            return ApplyEditsResponse(
+                files=[
+                    FileContent(path=path, content=content, version=version)
+                    for path, content, version in results
+                ]
+            )
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @application.patch("/api/files")
     async def rename_entry(body: RenameEntry, fs: Workspace = Depends(workspace)):
         try:
@@ -512,11 +537,22 @@ def create_app(
                     if Path(assistant.workspace).resolve() != active_workspace:
                         assistant = assistant.for_workspace(active_workspace)
                         application.state.assistant = assistant
+                compile_status = application.state.compiler.status.model_copy(deep=True)
+                context = body.context.model_copy(
+                    update={
+                        "main_file": application.state.main_file,
+                        "compile_state": compile_status.state,
+                        "diagnostics": compile_status.diagnostics,
+                        "compile_log": compile_status.log_tail,
+                    }
+                )
                 if progress is not None:
-                    return await assistant.chat_with_progress(
-                        body.messages, body.context, progress
+                    response = await assistant.chat_with_progress(
+                        body.messages, context, progress
                     )
-                return await assistant.chat(body.messages, body.context)
+                else:
+                    response = await assistant.chat(body.messages, context)
+                return prepare_assistant_edits(response, application.state.workspace)
         except AssistantUnavailable as exc:
             logger.warning("Assistant unavailable: %s", exc)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -534,6 +570,110 @@ def create_app(
             ) from exc
 
     return application
+
+
+def prepare_assistant_edits(
+    response: AssistantResponse,
+    workspace: Workspace,
+) -> AssistantResponse:
+    if len(response.proposed_edits) > 20:
+        raise AssistantUnavailable("Codex returned too many file edits for one review.")
+
+    prepared = []
+    seen: set[str] = set()
+    for edit in response.proposed_edits:
+        try:
+            target = workspace.resolve(edit.path)
+            canonical_path = target.relative_to(workspace.root).as_posix()
+            if canonical_path != edit.path or edit.path in seen:
+                raise WorkspaceError("Edit paths must be unique canonical project paths")
+            seen.add(edit.path)
+            if edit.content is not None and edit.replacements:
+                raise AssistantUnavailable(
+                    "Codex returned two conflicting representations of the same edit."
+                )
+            if target.exists():
+                if not target.is_file():
+                    raise WorkspaceError("An edit target is not a file")
+                current_content, version = workspace.read_versioned(edit.path)
+                replacement_content = materialize_assistant_edit(
+                    edit,
+                    current_content=current_content,
+                    is_new=False,
+                )
+                prepared.append(
+                    edit.model_copy(
+                        update={
+                            "content": replacement_content,
+                            "version": version,
+                            "is_new": False,
+                        }
+                    )
+                )
+            else:
+                replacement_content = materialize_assistant_edit(
+                    edit,
+                    current_content="",
+                    is_new=True,
+                )
+                prepared.append(
+                    edit.model_copy(
+                        update={
+                            "content": replacement_content,
+                            "version": None,
+                            "is_new": True,
+                        }
+                    )
+                )
+        except (OSError, WorkspaceError, UnicodeError) as exc:
+            logger.warning("Rejected unsafe Codex edit path %r: %s", edit.path, exc)
+            raise AssistantUnavailable(
+                "Codex returned an edit outside Cloverleaf's safe project file boundary."
+            ) from exc
+    return response.model_copy(update={"proposed_edits": prepared})
+
+
+def materialize_assistant_edit(
+    edit: ProposedEdit,
+    *,
+    current_content: str,
+    is_new: bool,
+) -> str:
+    """Expand a compact model edit into the complete content shown for review."""
+
+    if edit.content is not None:
+        content = edit.content
+    elif is_new:
+        if len(edit.replacements) != 1 or edit.replacements[0].old_text:
+            raise AssistantUnavailable(
+                f"Codex returned an invalid new-file edit for {edit.path}."
+            )
+        content = edit.replacements[0].new_text
+    else:
+        if not edit.replacements:
+            raise AssistantUnavailable(
+                f"Codex did not return a usable edit for {edit.path}."
+            )
+        content = current_content
+        for replacement in edit.replacements:
+            if not replacement.old_text or content.count(replacement.old_text) != 1:
+                raise AssistantUnavailable(
+                    f"Codex returned an edit for {edit.path} that did not uniquely match "
+                    "the current file. Ask Codex to inspect the file and try again."
+                )
+            content = content.replace(
+                replacement.old_text,
+                replacement.new_text,
+                1,
+            )
+
+    try:
+        content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise AssistantUnavailable(
+            f"Codex returned invalid text for {edit.path}."
+        ) from exc
+    return content
 
 
 def translate_error(exc: Exception) -> HTTPException:

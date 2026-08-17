@@ -125,9 +125,23 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .activity-health.delayed { color: var(--warning); }
 .activity-health.stale { color: var(--danger); }
 @keyframes activity-pulse { 70%, 100% { box-shadow: 0 0 0 6px #74c98c00; } }
+.edit-batch-actions { display: flex; margin-top: 8px; }
+.edit-batch-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; border: 1px solid #4a7256; border-radius: 3px; color: #c6e8ce; background: #1b2b20; font-size: 10px; }
+.edit-batch-actions button:hover { color: #fff; border-color: var(--accent); background: #223729; }
 .proposed-edit { margin-top: 8px; padding: 8px; border: 1px solid #375140; background: #172019; border-radius: 4px; display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .proposed-edit strong { font-family: ui-monospace, monospace; color: var(--accent); overflow-wrap: anywhere; }
-.proposed-edit div { display: flex; gap: 6px; margin-top: 3px; }
+.edit-review { margin-top: 3px; border: 1px solid #2e3d33; border-radius: 3px; background: #101612; }
+.edit-review summary { padding: 5px 7px; color: #aeb8b1; cursor: pointer; }
+.edit-review pre { max-height: 220px; margin: 0; padding: 7px; overflow: auto; border-top: 1px solid #2e3d33; color: #c7d0c9; font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+.replacement-list { border-top: 1px solid #2e3d33; }
+.replacement-pair { display: flex; flex-direction: column; }
+.replacement-pair + .replacement-pair { border-top: 1px solid #2e3d33; }
+.replacement-pair > strong { padding: 6px 7px 3px; color: #aeb8b1; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.replacement-label { padding: 4px 7px 2px; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase; }
+.replacement-label.removed { color: #d98c8c; }
+.replacement-label.added { color: var(--accent); }
+.replacement-pair pre { border-top: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.proposed-edit .edit-actions { display: flex; gap: 6px; margin-top: 3px; }
 .proposed-edit button { display: inline-flex; align-items: center; gap: 4px; color: #aeb8b1; background: #252e28; padding: 4px 7px; border-radius: 3px; }
 .proposed-edit button:hover { color: #fff; }
 .chat-input { flex: 0 0 auto; margin: 8px; border: 1px solid #344039; background: var(--panel-deep); border-radius: 5px; display: flex; align-items: flex-end; padding: 4px; }

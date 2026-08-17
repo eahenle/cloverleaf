@@ -44,6 +44,9 @@ export type ProposedEdit = {
   path: string
   content: string
   summary: string
+  replacements?: Array<{ old_text: string; new_text: string }>
+  version: string | null
+  is_new: boolean
 }
 
 export type ChatMessage = {
@@ -53,10 +56,13 @@ export type ChatMessage = {
 }
 
 export type AssistantContext = {
+  main_file: string | null
   open_file: string | null
   open_file_content: string
   selected_text: string | null
   diagnostics: Diagnostic[]
+  compile_state: CompileStatus['state']
+  compile_log: string
 }
 
 export type AssistantResponse = {

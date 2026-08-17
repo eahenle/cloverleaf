@@ -74,16 +74,42 @@ class AssistantMessage(BaseModel):
 
 
 class AssistantContext(BaseModel):
+    main_file: str | None = None
     open_file: str | None = None
     open_file_content: str = ""
     selected_text: str | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list)
+    compile_state: Literal["idle", "compiling", "success", "error"] = "idle"
+    compile_log: str = ""
+
+
+class TextReplacement(BaseModel):
+    old_text: str
+    new_text: str
 
 
 class ProposedEdit(BaseModel):
     path: str
-    content: str
     summary: str
+    replacements: list[TextReplacement] = Field(default_factory=list, max_length=50)
+    content: str | None = None
+    version: str | None = None
+    is_new: bool = False
+
+
+class ApplyEdit(BaseModel):
+    path: str
+    content: str
+    version: str | None = None
+    is_new: bool = False
+
+
+class ApplyEditsRequest(BaseModel):
+    edits: list[ApplyEdit] = Field(min_length=1, max_length=20)
+
+
+class ApplyEditsResponse(BaseModel):
+    files: list[FileContent]
 
 
 class AssistantRequest(BaseModel):

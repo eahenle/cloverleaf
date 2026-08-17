@@ -320,10 +320,13 @@ export default function App() {
     })
     try {
       const result = await api.chat(next, {
+        main_file: project?.main_file ?? null,
         open_file: pathRef.current,
         open_file_content: contentRef.current,
         selected_text: selectedText || null,
         diagnostics: status.diagnostics,
+        compile_state: status.state,
+        compile_log: status.log_tail,
       }, startedAt, setAssistantProgress)
       setMessages([...next, { role: 'assistant', content: result.message, edits: result.proposed_edits }])
     } catch (reason) {
@@ -338,22 +341,22 @@ export default function App() {
     }
   }
 
-  const applyEdit = async (edit: ProposedEdit): Promise<boolean> => {
-    if (!window.confirm(`Apply Codex's proposed replacement to ${edit.path}?`)) return false
+  const applyEdits = async (edits: ProposedEdit[]): Promise<boolean> => {
+    const prompt = edits.length === 1
+      ? `Apply Codex's edit and ${edits[0].is_new ? 'create' : 'replace'} ${edits[0].path}?`
+      : `Apply all ${edits.length} Codex edits together?\n\n${edits.map((edit) => edit.path).join('\n')}`
+    if (!window.confirm(prompt)) return false
     try {
-      if (dirtyRef.current && pathRef.current !== edit.path) await saveCurrent(false)
+      if (dirtyRef.current) await saveCurrent(false)
       setEditIntent(null)
-      const saved = await api.write(
-        edit.path,
-        edit.content,
-        pathRef.current === edit.path ? fileVersionRef.current : null,
-      )
+      const result = await api.applyEdits(edits)
       await refreshTree()
-      updatePath(edit.path)
+      const saved = result.files.find((file) => file.path === pathRef.current) ?? result.files[0]
+      updatePath(saved.path)
       fileVersionRef.current = saved.version ?? null
-      syncedContentRef.current = edit.content
+      syncedContentRef.current = saved.content
       externalWarningVersionRef.current = null
-      updateContent(edit.content)
+      updateContent(saved.content)
       updateDirty(false)
       setSelectedText('')
       await requestCompile()
@@ -424,7 +427,7 @@ export default function App() {
                 busy={assistantBusy}
                 progress={assistantProgress}
                 onSend={(message) => void sendMessage(message)}
-                onApplyEdit={applyEdit}
+                onApplyEdits={applyEdits}
               />
             </Panel>
           </PanelGroup>

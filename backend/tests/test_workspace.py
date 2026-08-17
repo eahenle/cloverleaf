@@ -34,6 +34,51 @@ def test_versioned_write_rejects_external_changes(tmp_path: Path) -> None:
     assert workspace.read("main.tex") == "external"
 
 
+def test_reviewed_edits_apply_together_after_all_versions_validate(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "manuscript")
+    workspace.create("main.tex", "file", "main original")
+    workspace.create("sections/results.tex", "file", "results original")
+    _main, main_version = workspace.read_versioned("main.tex")
+    _results, results_version = workspace.read_versioned("sections/results.tex")
+
+    applied = workspace.apply_edits(
+        [
+            ("main.tex", "main revised", main_version, False),
+            ("sections/results.tex", "results revised", results_version, False),
+            ("sections/new.tex", "new section", None, True),
+        ]
+    )
+
+    assert [path for path, _content, _version in applied] == [
+        "main.tex",
+        "sections/results.tex",
+        "sections/new.tex",
+    ]
+    assert workspace.read("main.tex") == "main revised"
+    assert workspace.read("sections/results.tex") == "results revised"
+    assert workspace.read("sections/new.tex") == "new section"
+
+
+def test_reviewed_edit_set_changes_nothing_when_one_version_is_stale(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "manuscript")
+    workspace.create("main.tex", "file", "main original")
+    workspace.create("results.tex", "file", "results original")
+    _main, main_version = workspace.read_versioned("main.tex")
+    _results, stale_results_version = workspace.read_versioned("results.tex")
+    (workspace.root / "results.tex").write_text("human revision", encoding="utf-8")
+
+    with pytest.raises(FileChangedError, match="did not apply any"):
+        workspace.apply_edits(
+            [
+                ("main.tex", "Codex main", main_version, False),
+                ("results.tex", "Codex results", stale_results_version, False),
+            ]
+        )
+
+    assert workspace.read("main.tex") == "main original"
+    assert workspace.read("results.tex") == "human revision"
+
+
 @pytest.mark.parametrize(
     "path",
     [

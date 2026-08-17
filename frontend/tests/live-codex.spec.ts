@@ -79,7 +79,7 @@ test('authenticated Codex uses manuscript context and gates proposed edits', asy
 
     await ask(
       page,
-      "Propose a complete-file edit for sections/introduction.tex that preserves everything except replacing 'Overleaf-inspired' with 'focused local'. Return it using Cloverleaf's required cloverleaf-edits block.",
+      "Edit sections/introduction.tex, preserving everything except replacing 'Overleaf-inspired' with 'focused local'.",
     )
     await expect(page.locator('.proposed-edit').last()).toContainText('sections/introduction.tex')
     const afterConversation = ((await (await request.get('/api/files/sections/introduction.tex')).json()) as { content: string }).content
@@ -91,7 +91,7 @@ test('authenticated Codex uses manuscript context and gates proposed edits', asy
 
     await ask(
       page,
-      "Propose that same complete-file edit for sections/introduction.tex again using the cloverleaf-edits block.",
+      'Make that same concrete file edit again.',
     )
     const card = page.locator('.proposed-edit').last()
     await expect(card).toBeVisible()
@@ -127,7 +127,11 @@ test('authenticated Codex uses manuscript context and gates proposed edits', asy
     for (const payload of assistantPayloads) {
       const encoded = JSON.stringify(payload)
       expect(encoded).not.toMatch(/AI_API_KEY|Authorization|Bearer |access_token|refresh_token/i)
-      expect(Object.keys(payload as Record<string, unknown>).sort()).toEqual(['context', 'messages'])
+      expect(Object.keys(payload as Record<string, unknown>).sort()).toEqual([
+        'context',
+        'messages',
+        'request_id',
+      ])
       expect((payload as { context: Record<string, unknown> }).context).not.toHaveProperty('project_tree')
     }
   } finally {

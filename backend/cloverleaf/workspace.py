@@ -139,6 +139,60 @@ class Workspace:
         target.write_text(content, encoding="utf-8")
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
+    def apply_edits(
+        self,
+        edits: list[tuple[str, str, str | None, bool]],
+    ) -> list[tuple[str, str, str]]:
+        """Validate a reviewed edit set, then apply it as one best-effort transaction."""
+
+        prepared: list[tuple[str, Path, str, bytes | None]] = []
+        seen: set[str] = set()
+        for path, content, expected_version, is_new in edits:
+            if path in seen:
+                raise WorkspaceError("Reviewed edit paths must be unique")
+            seen.add(path)
+            target = self.resolve(path)
+            if is_new:
+                if target.exists():
+                    raise FileExistsError(path)
+                original = None
+            else:
+                if not target.exists():
+                    raise FileNotFoundError(path)
+                if not target.is_file():
+                    raise IsADirectoryError(path)
+                if expected_version is None:
+                    raise WorkspaceError("Existing reviewed edits require a file version")
+                original = target.read_bytes()
+                if hashlib.sha256(original).hexdigest() != expected_version:
+                    raise FileChangedError(
+                        f"{path} changed on disk; Cloverleaf did not apply any reviewed edits"
+                    )
+            try:
+                content.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise WorkspaceError("Only UTF-8 text files can be written") from exc
+            prepared.append((path, target, content, original))
+
+        written: list[tuple[Path, bytes | None]] = []
+        try:
+            for _path, target, content, original in prepared:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                written.append((target, original))
+                target.write_text(content, encoding="utf-8")
+        except Exception:
+            for target, original in reversed(written):
+                if original is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.write_bytes(original)
+            raise
+
+        return [
+            (path, content, hashlib.sha256(content.encode("utf-8")).hexdigest())
+            for path, _target, content, _original in prepared
+        ]
+
     def create(self, path: str, entry_type: str, content: str = "") -> None:
         target = self.resolve(path)
         if target.exists():
