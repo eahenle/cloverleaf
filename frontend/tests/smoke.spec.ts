@@ -242,6 +242,38 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
     }
   })
 
+  test('editor text scrolls independently of the caret', async ({ page, request }) => {
+    const filePath = 'editor-scroll-check.txt'
+    const content = Array.from(
+      { length: 300 },
+      (_, index) => `Scrollable line ${String(index + 1).padStart(3, '0')}`,
+    ).join('\n')
+    await request.delete(`/api/files/${filePath}`).catch(() => undefined)
+    await request.post('/api/files', {
+      data: { path: filePath, type: 'file', content },
+    })
+
+    try {
+      await page.goto('/')
+      await page.getByRole('button', { name: filePath, exact: true }).click()
+      await expect(page.locator('.cm-content')).toContainText('Scrollable line 001')
+
+      const scroller = page.locator('.cm-scroller')
+      const dimensions = await scroller.evaluate((element) => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+      }))
+      expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight)
+
+      await page.locator('.cm-line').first().click()
+      await scroller.hover()
+      await page.mouse.wheel(0, 900)
+      await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(200)
+    } finally {
+      await request.delete(`/api/files/${filePath}`).catch(() => undefined)
+    }
+  })
+
   test('open files follow external changes without overwriting local edits', async ({ page, request }) => {
     const filePath = 'sections/introduction.tex'
     const original = (await (await request.get(`/api/files/${filePath}`)).json()) as {

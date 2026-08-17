@@ -71,6 +71,7 @@ export function Editor({
       <div className="panel-body">
         {path ? (
           <CodeMirror
+            className="source-editor"
             value={value}
             height="100%"
             extensions={extensions}

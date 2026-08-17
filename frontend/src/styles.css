@@ -57,7 +57,8 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .row-actions button { padding: 3px; color: var(--muted); display: inline-flex; }
 .row-actions button:hover { color: #fff; }
 
-.editor-panel .panel-body, .editor-panel .cm-theme, .editor-panel .cm-editor { height: 100%; }
+.editor-panel .source-editor, .editor-panel .cm-editor { height: 100%; min-height: 0; }
+.editor-panel .source-editor { overflow: hidden; }
 .editor-panel .cm-editor { font-size: 13px; background: #111512; color: #d7ded9; }
 .editor-panel .cm-scroller { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; line-height: 1.55; overflow: auto; }
 .editor-panel .cm-gutters { background: #101411; color: #536058; border-right-color: #252d28; }
