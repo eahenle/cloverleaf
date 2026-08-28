@@ -6,6 +6,11 @@ __pycache__/
 .pytest_cache/
 .cloverleaf-project.json*
 .cloverleaf-runtime/
+.cloverleaf/
+
+# Local manuscript projects
+/job_hunt/
+/word-salad/
 
 frontend/node_modules/
 frontend/dist/

@@ -22,6 +22,35 @@ def test_file_lifecycle_and_tree(tmp_path: Path) -> None:
     assert workspace.tree() == []
 
 
+def test_project_skill_lifecycle_and_tree(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "manuscript")
+    skill_path = ".codex/skills/citation-check/SKILL.md"
+
+    workspace.create(skill_path, "file", "# Citation check\n")
+    assert workspace.read(skill_path) == "# Citation check\n"
+    workspace.write(skill_path, "# Citation check\n\nVerify every source.\n")
+    workspace.create(
+        ".codex/skills/citation-check/references/policy.md",
+        "file",
+        "Use primary sources.\n",
+    )
+
+    tree = workspace.tree()
+    assert tree[0].path == ".codex"
+    assert tree[0].children[0].path == ".codex/skills"
+    skill = tree[0].children[0].children[0]
+    assert skill.path == ".codex/skills/citation-check"
+    assert {child.name for child in skill.children} == {"references", "SKILL.md"}
+
+    workspace.rename(
+        ".codex/skills/citation-check",
+        ".codex/skills/source-check",
+    )
+    assert workspace.read(".codex/skills/source-check/SKILL.md").startswith("# Citation")
+    workspace.delete(".codex/skills/source-check")
+    assert workspace.tree()[0].children[0].children == []
+
+
 def test_versioned_write_rejects_external_changes(tmp_path: Path) -> None:
     workspace = Workspace(tmp_path / "manuscript")
     workspace.create("main.tex", "file", "first")
@@ -88,8 +117,10 @@ def test_reviewed_edit_set_changes_nothing_when_one_version_is_stale(tmp_path: P
         "%252e%252e/secret.tex",
         "..\\secret.tex",
         "C:\\Windows\\system.ini",
-        ".env",
-        "main.pdf",
+        ".git",
+        ".git/config",
+        ".GIT/config",
+        "nested/.git/config",
     ],
 )
 def test_rejects_unsafe_paths(tmp_path: Path, path: str) -> None:
@@ -110,9 +141,51 @@ def test_rejects_symlink_escape(tmp_path: Path) -> None:
         pytest.skip("Symlinks are unavailable on this platform")
 
     workspace = Workspace(workspace_root)
-    with pytest.raises(WorkspaceError, match="Symbolic links"):
+    with pytest.raises(WorkspaceError, match="escapes the project"):
         workspace.read("linked/secret.tex")
     assert workspace.tree() == []
+
+
+def test_hidden_project_files_and_direct_artifact_paths_are_editable(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "manuscript")
+    workspace.create(".env", "file", "SETTING=one\n")
+    workspace.create(".github/workflows/build.yml", "file", "name: build\n")
+    workspace.create("main.pdf", "file", "text fixture")
+
+    workspace.write(".env", "SETTING=two\n")
+
+    assert workspace.read(".env") == "SETTING=two\n"
+    assert workspace.read(".github/workflows/build.yml") == "name: build\n"
+    assert workspace.read("main.pdf") == "text fixture"
+    assert {node.name for node in workspace.tree()} == {".env", ".github"}
+
+
+def test_assistant_paths_normalize_absolute_in_project_paths(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "manuscript")
+    target = workspace.root / ".config" / "tool.toml"
+
+    resolved, canonical = workspace.resolve_assistant_path(str(target))
+
+    assert resolved == target
+    assert canonical == ".config/tool.toml"
+    with pytest.raises(WorkspaceError, match="outside"):
+        workspace.resolve_assistant_path(str(tmp_path / "outside.toml"))
+
+
+def test_rejects_symlink_aliases_into_git_internals(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    git_directory = root / ".git"
+    git_directory.mkdir(parents=True)
+    (git_directory / "config").write_text("protected", encoding="utf-8")
+    try:
+        (root / "git-alias").symlink_to(git_directory, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks are unavailable on this platform")
+
+    workspace = Workspace(root)
+
+    with pytest.raises(WorkspaceError, match="Git repository internals"):
+        workspace.resolve("git-alias/config", must_exist=True)
 
 
 def test_tree_hides_latex_artifacts(tmp_path: Path) -> None:

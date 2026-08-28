@@ -1,5 +1,8 @@
 import { expect, test, type APIRequestContext } from '@playwright/test'
 import path from 'node:path'
+import { clearAssistantHistory } from './history'
+
+test.beforeEach(async ({ request }) => clearAssistantHistory(request))
 
 type Status = {
   state: string
@@ -26,9 +29,35 @@ async function replaceEditor(page: import('@playwright/test').Page, content: str
 test('compiler failures retain the last preview and recover cleanly', async ({ page, request }) => {
   const sourceResponse = await request.get('/api/files/sections/introduction.tex')
   const original = ((await sourceResponse.json()) as { content: string }).content
+  let repairRequest: {
+    messages: Array<{ role: string; content: string }>
+    context: {
+      compile_state: string
+      diagnostics: Status['diagnostics']
+      compile_log: string
+    }
+  } | undefined
   const consoleErrors: string[] = []
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text())
+  })
+  await page.route('**/api/assistant/chat', (route) => {
+    repairRequest = route.request().postDataJSON() as typeof repairRequest
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        message: 'I found the undefined command and prepared a minimal repair.',
+        proposed_edits: [{
+          path: 'sections/introduction.tex',
+          content: '\\section{Welcome}\n\n',
+          summary: 'Remove the undefined command',
+          replacements: [{ old_text: '\\cloverleafUndefinedCommand\n', new_text: '' }],
+          version: 'test-version',
+          is_new: false,
+        }],
+      }),
+    })
   })
 
   try {
@@ -51,6 +80,21 @@ test('compiler failures retain the last preview and recover cleanly', async ({ p
     await expect(page.locator('.build-log')).not.toHaveAttribute('open', '')
     expect((await request.get('/api/health')).ok()).toBeTruthy()
 
+    await page.getByRole('tab', { name: 'Terminal' }).click()
+    await page.getByLabel('Fix compilation with Codex').click()
+    await expect(page.getByRole('tab', { name: 'Codex' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.message.user').last()).toContainText('Fix the current LaTeX compilation failure')
+    await expect(page.locator('.message.assistant').last()).toContainText('prepared a minimal repair')
+    await expect(page.locator('.proposed-edit').last()).toContainText('Remove the undefined command')
+    expect(repairRequest?.messages.at(-1)?.content).toContain('smallest safe edit')
+    expect(repairRequest?.context).toMatchObject({
+      compile_state: 'error',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringMatching(/undefined control sequence/i) }),
+      ]),
+    })
+    expect(repairRequest?.context.compile_log).toMatch(/cloverleafUndefinedCommand/)
+
     await page.screenshot({
       path: path.resolve(process.cwd(), '../screenshots/compiler-error.png'),
       fullPage: true,
@@ -59,6 +103,7 @@ test('compiler failures retain the last preview and recover cleanly', async ({ p
     await replaceEditor(page, original)
     await waitForState(request, 'success')
     await expect(page.locator('.preview-badge.error')).toHaveCount(0)
+    await expect(page.getByLabel('Fix compilation with Codex')).toHaveCount(0)
 
     await replaceEditor(page, '\\section{Welcome\n\nThis section title is missing its closing brace.\n')
     failed = await waitForState(request, 'error')

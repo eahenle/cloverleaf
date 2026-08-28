@@ -2,6 +2,9 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { clearAssistantHistory } from './history'
+
+test.beforeEach(async ({ request }) => clearAssistantHistory(request))
 
 type Status = { state: string; revision: number }
 
@@ -201,7 +204,7 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       const invalidDialog = acceptNextDialog(page, '../outside.tex')
       await page.getByLabel('Create file').click()
       await invalidDialog
-      await expect(page.getByRole('alert')).toContainText('visible relative path')
+      await expect(page.getByRole('alert')).toContainText('relative and remain inside the project')
 
       await page.getByRole('button', { name: 'renamed.tex', exact: true }).hover()
       const deleteFileDialog = acceptNextDialog(page, 'confirm')
@@ -339,6 +342,11 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       '\\documentclass{article}\n\\begin{document}\nLoaded project proof.\n\\input{sections/note}\n\\end{document}\n',
       'utf8',
     )
+    await writeFile(
+      path.join(temporary, 'view.tex'),
+      '\\documentclass{article}\n\\begin{document}\nAlternate view proof.\n\\end{document}\n',
+      'utf8',
+    )
     await writeFile(path.join(temporary, 'sections', 'note.tex'), 'A second source file.\n', 'utf8')
 
     try {
@@ -387,6 +395,66 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
       const loaded = await (await request.get('/api/project')).json()
       expect(loaded).toMatchObject({ workspace: canonicalTemporary, main_file: 'paper.tex' })
 
+      await page.getByRole('button', { name: 'view.tex', exact: true }).click()
+      await expect(page.getByLabel('Compile view.tex as the current view')).toBeVisible()
+      await page.evaluate(() => {
+        const browserWindow = window as typeof window & {
+          __savedPdf?: { name: string; size: number; type: string; closed: boolean }
+          showSaveFilePicker?: (options: { suggestedName: string }) => Promise<{
+            createWritable: () => Promise<{
+              write: (data: Blob) => Promise<void>
+              close: () => Promise<void>
+            }>
+          }>
+        }
+        Object.defineProperty(browserWindow, 'showSaveFilePicker', {
+          configurable: true,
+          value: async (options: { suggestedName: string }) => ({
+            createWritable: async () => ({
+              write: async (data: Blob) => {
+                browserWindow.__savedPdf = {
+                  name: options.suggestedName,
+                  size: data.size,
+                  type: data.type,
+                  closed: false,
+                }
+              },
+              close: async () => {
+                if (browserWindow.__savedPdf) browserWindow.__savedPdf.closed = true
+              },
+            }),
+          }),
+        })
+      })
+      await page.getByLabel('Compile view.tex as the current view').click()
+      await expect(page.locator('.compiler-root')).toContainText('view.tex')
+      await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })
+      await expect(page.getByTestId('pdf-page')).toHaveCount(1, { timeout: 30_000 })
+      await expect.poll(() => pdfText(request), { timeout: 30_000 }).toContain('Alternate view proof')
+      expect(await (await request.get('/api/project')).json()).toMatchObject({
+        workspace: canonicalTemporary,
+        main_file: 'view.tex',
+      })
+
+      await page.getByLabel('Save PDF as view.pdf').click()
+      await expect.poll(() => page.evaluate(() => {
+        const saved = (window as typeof window & {
+          __savedPdf?: { name: string; size: number; type: string; closed: boolean }
+        }).__savedPdf
+        return saved ? { ...saved, hasContent: saved.size > 100 } : null
+      })).toEqual({
+        name: 'view.pdf',
+        size: expect.any(Number),
+        type: 'application/pdf',
+        closed: true,
+        hasContent: true,
+      })
+
+      await page.screenshot({
+        path: path.resolve(process.cwd(), '../screenshots/alternate-view.png'),
+        fullPage: true,
+      })
+
       await page.screenshot({
         path: path.resolve(process.cwd(), '../screenshots/loaded-project.png'),
         fullPage: true,
@@ -411,6 +479,95 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
         path: path.resolve(process.cwd(), '../screenshots/created-main-project.png'),
         fullPage: true,
       })
+    } finally {
+      const restored = await request.post('/api/project/load', {
+        data: { workspace: initial.workspace, main_file: initial.main_file },
+      })
+      expect(restored.ok()).toBeTruthy()
+      await request.post('/api/compile')
+      await expect.poll(async () => (await status(request)).state, { timeout: 30_000 }).toBe('success')
+      await rm(temporary, { recursive: true, force: true })
+    }
+  })
+
+  test('new projects can use a selected root or create a root directory', async ({ page, request }) => {
+    const initial = (await (await request.get('/api/project')).json()) as {
+      workspace: string
+      name: string
+      main_file: string
+    }
+    const temporary = await mkdtemp(
+      path.join(path.dirname(initial.workspace), 'cloverleaf-new-project-'),
+    )
+    const selectedRoot = path.join(temporary, 'selected-root')
+    await mkdir(selectedRoot)
+
+    try {
+      await page.goto('/')
+      await page.getByLabel('New project').click()
+      let picker = page.getByRole('dialog', { name: 'New project' })
+      await expect(picker).toBeVisible()
+      await expect(picker.getByLabel('New folder name')).toHaveValue('')
+      await picker.getByRole('button', { name: 'Up' }).click()
+      await picker.getByRole('button', {
+        name: `Open folder ${path.basename(temporary)}`,
+        exact: true,
+      }).click()
+      await picker.getByRole('button', { name: 'Open folder selected-root', exact: true }).click()
+      await expect(picker.getByRole('button', { name: 'Create project here' })).toBeEnabled()
+
+      await page.screenshot({
+        path: path.resolve(process.cwd(), '../screenshots/new-project-picker.png'),
+        fullPage: true,
+      })
+      await picker.getByRole('button', { name: 'Create project here' }).click()
+
+      await expect(picker).toHaveCount(0)
+      await expect(page.locator('.project-path')).toContainText('selected-root / main.tex')
+      await expect(page.locator('.cm-content')).toContainText('Start writing here.')
+      await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })
+      expect(
+        ((await (await request.get('/api/project')).json()) as { workspace: string }).workspace,
+      ).toBe(await realpath(selectedRoot))
+      expect(
+        (await (await request.get('/api/project/git')).json()) as {
+          initialized: boolean
+          head: string | null
+          last_error: string | null
+        },
+      ).toMatchObject({ initialized: true, head: expect.any(String), last_error: null })
+      await expect.poll(async () => realpath(path.join(selectedRoot, '.git'))).toBe(
+        path.join(await realpath(selectedRoot), '.git'),
+      )
+
+      await page.getByLabel('New project').click()
+      picker = page.getByRole('dialog', { name: 'New project' })
+      await picker.getByRole('button', { name: 'Up' }).click()
+      await picker.getByLabel('New folder name').fill('created-root')
+      await expect(picker.getByText('create this folder and initialize main.tex')).toBeVisible()
+      await picker.getByRole('button', { name: 'Create project', exact: true }).click()
+
+      const createdRoot = path.join(temporary, 'created-root')
+      await expect(page.locator('.project-path')).toContainText('created-root / main.tex')
+      await expect(page.locator('.cm-content')).toContainText('Start writing here.')
+      await expect(page.locator('.topbar-build')).toHaveClass(/success/, { timeout: 30_000 })
+      await expect(page.getByTestId('pdf-page')).toHaveCount(1, { timeout: 30_000 })
+      expect(
+        ((await (await request.get('/api/project')).json()) as { workspace: string }).workspace,
+      ).toBe(await realpath(createdRoot))
+      expect(
+        ((await (await request.get('/api/files/main.tex')).json()) as { content: string }).content,
+      ).toContain('Start writing here.')
+      expect(
+        (await (await request.get('/api/project/git')).json()) as {
+          initialized: boolean
+          head: string | null
+          last_error: string | null
+        },
+      ).toMatchObject({ initialized: true, head: expect.any(String), last_error: null })
+      await expect.poll(async () => realpath(path.join(createdRoot, '.git'))).toBe(
+        path.join(await realpath(createdRoot), '.git'),
+      )
     } finally {
       const restored = await request.post('/api/project/load', {
         data: { workspace: initial.workspace, main_file: initial.main_file },

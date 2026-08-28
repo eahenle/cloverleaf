@@ -1,12 +1,15 @@
-import { AlertTriangle, CheckCircle2, LoaderCircle, Play } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FileOutput, LoaderCircle, Play, Sparkles } from 'lucide-react'
 import type { CompileStatus } from '../types'
 
 type Props = {
   status: CompileStatus
+  mainFile: string
   onCompile: () => void
+  onFixWithCodex: () => void
+  codexBusy: boolean
 }
 
-export function ProjectStatus({ status, onCompile }: Props) {
+export function ProjectStatus({ status, mainFile, onCompile, onFixWithCodex, codexBusy }: Props) {
   const StateIcon =
     status.state === 'success'
       ? CheckCircle2
@@ -34,6 +37,22 @@ export function ProjectStatus({ status, onCompile }: Props) {
           <span>{status.state === 'idle' ? 'Waiting for first build' : status.state}</span>
           {status.revision > 0 && <small>rev {status.revision}</small>}
         </div>
+        <div className="compiler-root" title={mainFile}>
+          <FileOutput size={12} />
+          <span>{mainFile}</span>
+        </div>
+        {status.state === 'error' && (
+          <button
+            type="button"
+            className="compiler-fix-button"
+            onClick={onFixWithCodex}
+            disabled={codexBusy}
+            aria-label="Fix compilation with Codex"
+          >
+            {codexBusy ? <LoaderCircle className="spin" size={13} /> : <Sparkles size={13} />}
+            {codexBusy ? 'Codex is working…' : 'Fix with Codex'}
+          </button>
+        )}
         <div className="diagnostics">
           {status.diagnostics.length === 0 ? (
             <p className="muted">

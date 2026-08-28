@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -25,13 +26,13 @@ CONVERSATION_MAX_CHARS = 120_000
 
 ASSISTANT_DEVELOPER_INSTRUCTIONS = """You are the project agent embedded in Cloverleaf, a local LaTeX research-authoring IDE.
 
-Your standing objective is to advance the project's main LaTeX document toward an accurate, coherent, polished manuscript that compiles successfully. Treat the manuscript as part of the surrounding research project: inspect relevant project files before answering when the supplied context is insufficient.
+Your standing objective is to advance the active research project, especially its main LaTeX document, toward an accurate, coherent, polished result that compiles successfully. Treat the manuscript as part of the surrounding project: inspect relevant project files before answering when the supplied context is insufficient. Support requested project tooling and instructions, including project-local Codex skills under `.codex/skills/<skill-name>/`.
 
 Act instead of merely advising. When the user asks for a change, or when completing the request clearly requires a file change, produce actual exact text replacements in `proposed_edits`. Do not put suggested wording, patches, replacement snippets, or instructions for the user to carry out in the conversational `message`. The `message` should only summarize what you changed, explain an answer that genuinely requires no file change, or state a concrete blocker.
 
 Preserve valid LaTeX structure, project conventions, citations, labels, references, and includes. Prefer focused edits over unrelated rewrites. Use compiler diagnostics and the compilation root to diagnose failures. If the user asks only a question or explicitly asks for an explanation, answer it directly without manufacturing an edit.
 
-You have read-only project access. Inspect files with runtime tools, but do not claim to have written the live workspace. Cloverleaf turns every item in `proposed_edits` into a review card and writes it only after the user confirms. Each proposed edit must contain a visible relative project path, a concise summary, and the smallest practical sequence of exact `old_text` to `new_text` replacements. Every `old_text` for an existing file must match exactly once when applied in order; include enough surrounding text to make it unique, but never emit the complete file merely to change a small region. To create a file, use one replacement whose `old_text` is empty and whose `new_text` is the complete new file. Never expose credentials, authentication data, hidden files, or files outside the project.
+You have read-only project access. Inspect files with runtime tools, but do not claim to have written the live workspace. Cloverleaf turns every item in `proposed_edits` into a review card and writes it only after the user confirms. Each proposed edit must contain a relative path to any UTF-8 text file inside the project, including hidden project configuration and project-local skills, plus a concise summary and the smallest practical sequence of exact `old_text` to `new_text` replacements. Every `old_text` for an existing file must match exactly once when applied in order; include enough surrounding text to make it unique, but never emit the complete file merely to change a small region. To create a file, use one replacement whose `old_text` is empty and whose `new_text` is the complete new file. Never expose credentials or authentication data, edit `.git` internals, or propose files outside the project.
 """
 
 ASSISTANT_OUTPUT_SCHEMA = {
@@ -56,7 +57,10 @@ ASSISTANT_OUTPUT_SCHEMA = {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Visible relative path inside the active project.",
+                        "description": (
+                            "Relative path to any UTF-8 text file inside the active project. "
+                            "Do not target .git internals or paths outside the project."
+                        ),
                     },
                     "summary": {
                         "type": "string",
@@ -251,7 +255,18 @@ class CodexProvider(AssistantProvider):
                 progress("submitting", "Sending the manuscript request…")
                 turn = await thread.turn(prompt, output_schema=ASSISTANT_OUTPUT_SCHEMA)
                 progress("working", "Codex accepted the request and is working…")
-                final_response = await _consume_codex_turn(turn, progress)
+                try:
+                    final_response = await _consume_codex_turn(turn, progress)
+                except asyncio.CancelledError:
+                    try:
+                        await asyncio.shield(turn.interrupt())
+                    except Exception as interrupt_exc:
+                        logger.warning(
+                            "Codex turn interruption failed (%s): %s",
+                            type(interrupt_exc).__name__,
+                            interrupt_exc,
+                        )
+                    raise
         except Exception as exc:
             logger.warning("Codex request failed (%s): %s", type(exc).__name__, exc)
             raise AssistantUnavailable(_codex_failure_message(exc)) from exc

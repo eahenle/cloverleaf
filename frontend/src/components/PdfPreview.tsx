@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Download, LoaderCircle } from 'lucide-react'
 import {
   GlobalWorkerOptions,
   getDocument,
@@ -64,19 +65,45 @@ function PdfPage({ document, pageNumber, width, onRendered, onError }: PdfPagePr
   return <canvas ref={canvasRef} className="pdf-page" data-testid="pdf-page" aria-label={`PDF page ${pageNumber}`} />
 }
 
-type Props = { status: CompileStatus; projectKey: string | null }
+type WritablePdfFile = {
+  write: (data: Blob) => Promise<void>
+  close: () => Promise<void>
+}
 
-export function PdfPreview({ status, projectKey }: Props) {
+type PdfFileHandle = {
+  createWritable: () => Promise<WritablePdfFile>
+}
+
+type SaveFilePicker = (options: {
+  suggestedName: string
+  types: Array<{ description: string; accept: Record<string, string[]> }>
+}) => Promise<PdfFileHandle>
+
+type Props = {
+  status: CompileStatus
+  projectKey: string | null
+  mainFile: string | null
+  onError: (reason: unknown) => void
+}
+
+export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef<PDFDocumentProxy | null>(null)
   const loadedRevisionRef = useRef(0)
   const scrollRatioRef = useRef(0)
   const restoredRevisionRef = useRef(0)
   const renderedPagesRef = useRef(new Set<number>())
-  const [loaded, setLoaded] = useState<{ document: PDFDocumentProxy; revision: number } | null>(null)
+  const [loaded, setLoaded] = useState<{
+    document: PDFDocumentProxy
+    revision: number
+    data: ArrayBuffer
+  } | null>(null)
   const [width, setWidth] = useState(320)
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  const pdfName = (mainFile?.split('/').pop() ?? 'document.tex').replace(/\.tex$/i, '.pdf')
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -122,8 +149,11 @@ export function PdfPreview({ status, projectKey }: Props) {
         }
         return response.arrayBuffer()
       })
-      .then((data) => getDocument({ data }).promise)
-      .then((nextDocument) => {
+      .then(async (data) => ({
+        data,
+        document: await getDocument({ data: data.slice(0) }).promise,
+      }))
+      .then(({ data, document: nextDocument }) => {
         if (cancelled) {
           void nextDocument.destroy()
           return
@@ -131,7 +161,7 @@ export function PdfPreview({ status, projectKey }: Props) {
         const previous = documentRef.current
         documentRef.current = nextDocument
         loadedRevisionRef.current = status.revision
-        setLoaded({ document: nextDocument, revision: status.revision })
+        setLoaded({ document: nextDocument, revision: status.revision, data })
         if (previous) void previous.destroy()
       })
       .catch((reason: unknown) => {
@@ -176,15 +206,65 @@ export function PdfPreview({ status, projectKey }: Props) {
     ? Array.from({ length: loaded.document.numPages }, (_, index) => index + 1)
     : []
 
+  const canSave = Boolean(
+    loaded && status.state === 'success' && loaded.revision === status.revision,
+  )
+
+  const savePdf = useCallback(async () => {
+    if (!loaded || !canSave || saving) return
+    const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
+    setSaving(true)
+    try {
+      const handle = picker
+        ? await picker({
+            suggestedName: pdfName,
+            types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }],
+          })
+        : null
+      const blob = new Blob([loaded.data], { type: 'application/pdf' })
+      if (handle) {
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+      } else {
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = pdfName
+        document.body.append(anchor)
+        anchor.click()
+        anchor.remove()
+        window.setTimeout(() => URL.revokeObjectURL(url), 0)
+      }
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) onError(reason)
+    } finally {
+      setSaving(false)
+    }
+  }, [canSave, loaded, onError, pdfName, saving])
+
   return (
     <section className="panel" aria-label="PDF preview">
       <header className="panel-header">
         <span>PDF preview</span>
-        {loaded && (
-          <span className="preview-pages">
-            {loaded.document.numPages} {loaded.document.numPages === 1 ? 'page' : 'pages'}
-          </span>
-        )}
+        <span className="preview-actions">
+          {loaded && (
+            <span className="preview-pages">
+              {loaded.document.numPages} {loaded.document.numPages === 1 ? 'page' : 'pages'}
+            </span>
+          )}
+          <button
+            type="button"
+            className="text-button preview-save-button"
+            onClick={() => void savePdf()}
+            disabled={!canSave || saving}
+            title={`Save ${pdfName} to a chosen location`}
+            aria-label={`Save PDF as ${pdfName}`}
+          >
+            {saving ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />}
+            {saving ? 'Saving…' : 'Save PDF'}
+          </button>
+        </span>
       </header>
       <div className="panel-body preview-body">
         <div className="pdf-scroll" ref={scrollRef} aria-busy={loading || status.state === 'compiling'}>

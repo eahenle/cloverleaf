@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,6 +16,15 @@ def make_client(tmp_path: Path) -> TestClient:
     (workspace / "main.tex").write_text("hello", encoding="utf-8")
     settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
     return TestClient(create_app(settings))
+
+
+def git_output(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def test_file_api_lifecycle(tmp_path: Path) -> None:
@@ -36,6 +47,116 @@ def test_file_api_lifecycle(tmp_path: Path) -> None:
         ).status_code == 200
         assert client.delete("/api/files/notes/final.tex").status_code == 204
         assert client.delete("/api/files/notes").status_code == 204
+
+
+def test_file_api_writes_create_local_git_checkpoints(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    with make_client(tmp_path) as client:
+        initial_count = int(git_output(workspace, "rev-list", "--count", "HEAD"))
+        opened = client.get("/api/files/main.tex").json()
+
+        response = client.put(
+            "/api/files/main.tex",
+            json={**opened, "content": "checkpointed manuscript"},
+        )
+
+        assert response.status_code == 200
+        repository = client.get("/api/project/git")
+        assert repository.status_code == 200
+        assert repository.json()["initialized"] is True
+        assert repository.json()["head"]
+        assert repository.json()["last_error"] is None
+        assert int(git_output(workspace, "rev-list", "--count", "HEAD")) == initial_count + 1
+        assert git_output(workspace, "log", "-1", "--pretty=%s") == "Update main.tex"
+        assert git_output(workspace, "show", "HEAD:main.tex") == "checkpointed manuscript"
+
+
+def test_codex_history_is_project_local_persistent_and_not_checkpointed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("hello", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings)) as client:
+        empty = client.get("/api/project/codex-history")
+        assert empty.status_code == 200
+        assert empty.json() == {
+            "version": 1,
+            "workspace": str(workspace.resolve()),
+            "messages": [],
+            "dismissed_edit_keys": [],
+        }
+        payload = {
+            "version": 1,
+            "workspace": str(workspace.resolve()),
+            "messages": [
+                {"role": "user", "content": "Revise the opening"},
+                {
+                    "role": "assistant",
+                    "content": "Prepared one edit.",
+                    "edits": [
+                        {
+                            "path": "main.tex",
+                            "summary": "Revise the opening",
+                            "replacements": [{"old_text": "hello", "new_text": "revised"}],
+                            "content": "revised",
+                            "version": "source-version",
+                            "is_new": False,
+                        }
+                    ],
+                },
+            ],
+            "dismissed_edit_keys": ["1-0"],
+        }
+        saved = client.put("/api/project/codex-history", json=payload)
+        assert saved.status_code == 200
+        canonical_history = saved.json()
+        assert client.get("/api/project/codex-history").json() == canonical_history
+        assert ".cloverleaf" not in {
+            node["name"] for node in client.get("/api/project/tree").json()
+        }
+        assert git_output(workspace, "status", "--short") == ""
+        wrong_project = client.put(
+            "/api/project/codex-history",
+            json={**payload, "workspace": str(tmp_path / "other")},
+        )
+        assert wrong_project.status_code == 409
+
+    with TestClient(create_app(settings)) as restarted_client:
+        restored = restarted_client.get("/api/project/codex-history")
+
+    assert restored.status_code == 200
+    assert restored.json() == canonical_history
+
+
+def test_codex_history_rejects_a_state_directory_that_escapes_the_project(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / "main.tex").write_text("hello", encoding="utf-8")
+    try:
+        (workspace / ".cloverleaf").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        return
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings)) as client:
+        empty = client.get("/api/project/codex-history")
+        saved = client.put(
+            "/api/project/codex-history",
+            json={
+                "version": 1,
+                "workspace": str(workspace.resolve()),
+                "messages": [{"role": "user", "content": "do not escape"}],
+                "dismissed_edit_keys": [],
+            },
+        )
+
+    assert empty.status_code == 200
+    assert empty.json()["messages"] == []
+    assert saved.status_code == 503
+    assert not (outside / "codex-history.json").exists()
 
 
 def test_file_api_rejects_stale_editor_write(tmp_path: Path) -> None:
@@ -92,10 +213,25 @@ def test_health_and_missing_pdf_are_clear(tmp_path: Path) -> None:
             "managed": False,
             "log_available": False,
             "shutdown_available": False,
+            "restart_available": False,
         }
         shutdown = client.post("/api/runtime/shutdown")
         assert shutdown.status_code == 409
         assert "launcher" in shutdown.json()["detail"]
+        restart = client.post("/api/runtime/restart")
+        assert restart.status_code == 409
+        assert "launcher" in restart.json()["detail"]
+        status = client.get("/api/status")
+        assert status.status_code == 200
+        assert status.json()["overall"] in {"healthy", "degraded"}
+        assert {service["id"] for service in status.json()["services"]} == {
+            "backend",
+            "project",
+            "git",
+            "compiler",
+            "assistant",
+            "launcher",
+        }
         response = client.get("/api/pdf")
         assert response.status_code == 404
         assert response.json()["detail"] == "No successful PDF build is available yet"
@@ -110,11 +246,13 @@ def test_launcher_runtime_logs_and_shutdown_signal(tmp_path: Path) -> None:
     log_path = runtime_dir / "server.log"
     log_path.write_text("[backend:stderr] server ready\n", encoding="utf-8")
     shutdown_path = runtime_dir / "shutdown"
+    restart_path = runtime_dir / "restart"
     settings = Settings(
         CLOVERLEAF_WORKSPACE=workspace,
         AI_PROVIDER="disabled",
         CLOVERLEAF_RUNTIME_LOG=str(log_path),
         CLOVERLEAF_RUNTIME_SHUTDOWN=str(shutdown_path),
+        CLOVERLEAF_RUNTIME_RESTART=str(restart_path),
     )
 
     with TestClient(create_app(settings)) as client:
@@ -122,11 +260,16 @@ def test_launcher_runtime_logs_and_shutdown_signal(tmp_path: Path) -> None:
             "managed": True,
             "log_available": True,
             "shutdown_available": True,
+            "restart_available": True,
         }
         with client.websocket_connect("/api/runtime/logs") as socket:
             assert "server ready" in socket.receive_text()
+        restart_response = client.post("/api/runtime/restart")
         response = client.post("/api/runtime/shutdown")
 
+    assert restart_response.status_code == 202
+    assert restart_response.json()["message"] == "Server restart requested"
+    assert restart_path.read_text(encoding="utf-8") == "restart requested\n"
     assert response.status_code == 202
     assert response.json()["message"] == "Server shutdown requested"
     assert shutdown_path.read_text(encoding="utf-8") == "shutdown requested\n"
@@ -173,6 +316,67 @@ def test_project_can_be_loaded_at_runtime(tmp_path: Path) -> None:
             "name": "other-project",
             "main_file": "paper.tex",
         }
+
+
+def test_compilation_root_can_change_within_active_project(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    views = workspace / "views"
+    views.mkdir(parents=True)
+    (workspace / "main.tex").write_text("main", encoding="utf-8")
+    (views / "summary.tex").write_text("summary", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings)) as client:
+        original_compiler = client.app.state.compiler
+        response = client.post(
+            "/api/project/compilation-root",
+            json={"main_file": "views/summary.tex"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "workspace": str(workspace.resolve()),
+            "name": "workspace",
+            "main_file": "views/summary.tex",
+        }
+        assert client.app.state.workspace.root == workspace.resolve()
+        assert client.app.state.compiler is not original_compiler
+        assert client.app.state.compiler.workspace == workspace.resolve()
+        assert client.app.state.compiler.main_file == "views/summary.tex"
+
+    persisted = json.loads((tmp_path / ".cloverleaf-project.json").read_text(encoding="utf-8"))
+    assert persisted == {
+        "workspace": str(workspace.resolve()),
+        "main_file": "views/summary.tex",
+    }
+    with TestClient(create_app(settings)) as restarted:
+        assert restarted.get("/api/project").json()["main_file"] == "views/summary.tex"
+
+
+def test_invalid_compilation_root_does_not_replace_current_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("main", encoding="utf-8")
+    (workspace / "notes.txt").write_text("notes", encoding="utf-8")
+    (workspace / "folder").mkdir()
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings)) as client:
+        original_compiler = client.app.state.compiler
+        attempts = [
+            ("../outside.tex", 400),
+            ("notes.txt", 400),
+            ("missing.tex", 404),
+            ("folder", 400),
+        ]
+        for main_file, expected_status in attempts:
+            response = client.post(
+                "/api/project/compilation-root",
+                json={"main_file": main_file},
+            )
+            assert response.status_code == expected_status
+            assert client.get("/api/project").json()["main_file"] == "main.tex"
+            assert client.app.state.compiler is original_compiler
 
 
 def test_project_folder_browser_lists_safe_choices(tmp_path: Path) -> None:
@@ -225,6 +429,67 @@ def test_loading_empty_project_creates_main_tex(tmp_path: Path) -> None:
         assert client.get("/api/files/main.tex").json()["content"] == content
 
 
+def test_new_project_can_use_selected_root_or_create_directory(tmp_path: Path) -> None:
+    parent = tmp_path / "projects"
+    selected = parent / "selected-root"
+    selected.mkdir(parents=True)
+    (selected / "notes.txt").write_text("keep me", encoding="utf-8")
+
+    with make_client(tmp_path) as client:
+        selected_response = client.post(
+            "/api/project/new",
+            json={"parent": str(selected), "name": None},
+        )
+
+        assert selected_response.status_code == 201
+        assert selected_response.json() == {
+            "workspace": str(selected.resolve()),
+            "name": "selected-root",
+            "main_file": "main.tex",
+        }
+        assert "Start writing here." in (selected / "main.tex").read_text(encoding="utf-8")
+        assert (selected / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+        created_response = client.post(
+            "/api/project/new",
+            json={"parent": str(parent), "name": "created-root"},
+        )
+
+        created = parent / "created-root"
+        assert created_response.status_code == 201
+        assert created_response.json()["workspace"] == str(created.resolve())
+        assert created_response.json()["main_file"] == "main.tex"
+        assert "Start writing here." in (created / "main.tex").read_text(encoding="utf-8")
+        assert client.get("/api/files/main.tex").status_code == 200
+
+
+def test_new_project_rejects_unsafe_or_existing_roots(tmp_path: Path) -> None:
+    parent = tmp_path / "projects"
+    parent.mkdir()
+    existing = parent / "existing"
+    existing.mkdir()
+    (existing / "main.tex").write_text("existing manuscript", encoding="utf-8")
+
+    with make_client(tmp_path) as client:
+        original = client.get("/api/project").json()
+        attempts = [
+            ({"parent": "relative", "name": None}, 400),
+            ({"parent": str(parent), "name": ""}, 400),
+            ({"parent": str(parent), "name": ".hidden"}, 400),
+            ({"parent": str(parent), "name": "nested/project"}, 400),
+            ({"parent": str(parent), "name": "existing"}, 409),
+            ({"parent": str(existing), "name": None}, 409),
+        ]
+        for payload, expected_status in attempts:
+            response = client.post("/api/project/new", json=payload)
+            assert response.status_code == expected_status
+            assert client.get("/api/project").json() == original
+
+    assert (existing / "main.tex").read_text(encoding="utf-8") == "existing manuscript"
+    assert not (parent / ".hidden").exists()
+    assert not (parent / "nested").exists()
+
+
 def test_invalid_project_load_does_not_replace_current_project(tmp_path: Path) -> None:
     outside = tmp_path / "outside.tex"
     outside.write_text("outside", encoding="utf-8")
@@ -263,6 +528,29 @@ def test_loading_project_rebinds_codex_workspace(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert isinstance(client.app.state.assistant, CodexProvider)
         assert client.app.state.assistant.workspace == str(other.resolve())
+
+
+def test_new_project_rebinds_codex_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("first", encoding="utf-8")
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="codex")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/project/new",
+            json={"parent": str(projects), "name": "fresh"},
+        )
+
+        created = (projects / "fresh").resolve()
+        assert response.status_code == 201
+        assert response.json()["workspace"] == str(created)
+        assert client.app.state.workspace.root == created
+        assert client.app.state.compiler.workspace == created
+        assert isinstance(client.app.state.assistant, CodexProvider)
+        assert client.app.state.assistant.workspace == str(created)
 
 
 class RecordingCodexProvider(CodexProvider):

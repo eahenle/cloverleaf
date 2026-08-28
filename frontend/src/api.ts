@@ -7,7 +7,9 @@ import type {
   DirectoryListing,
   FileContent,
   ProjectInfo,
+  ProjectAssistantHistory,
   RuntimeInfo,
+  SystemStatus,
   TreeNode,
 } from './types'
 
@@ -36,21 +38,32 @@ async function progressChat(
   context: AssistantContext,
   startedAt: number,
   onProgress: (progress: AssistantProgress) => void,
+  requestId: string,
+  signal: AbortSignal,
 ): Promise<AssistantResponse> {
-  const requestId = crypto.randomUUID()
+  if (signal.aborted) throw new DOMException('Codex turn cancelled', 'AbortError')
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const socket = new WebSocket(
     `${protocol}//${window.location.host}/api/assistant/progress/${requestId}`,
   )
-  const connected = await new Promise<boolean>((resolve) => {
+  const connected = await new Promise<boolean>((resolve, reject) => {
     let settled = false
     const finish = (value: boolean) => {
       if (settled) return
       settled = true
       window.clearTimeout(timeout)
+      signal.removeEventListener('abort', abort)
       resolve(value)
     }
+    const abort = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      socket.close()
+      reject(new DOMException('Codex turn cancelled', 'AbortError'))
+    }
     const timeout = window.setTimeout(() => finish(false), 2_000)
+    signal.addEventListener('abort', abort, { once: true })
     socket.onopen = () => finish(true)
     socket.onerror = () => finish(false)
     socket.onmessage = (event) => {
@@ -82,6 +95,7 @@ async function progressChat(
         context,
         request_id: requestId,
       }),
+      signal,
     })
   } finally {
     socket.close(1000)
@@ -94,17 +108,44 @@ function encodePath(path: string): string {
 
 export const api = {
   health: () => request<{ ok: boolean }>('/api/health'),
+  status: () => request<SystemStatus>('/api/status'),
   runtime: () => request<RuntimeInfo>('/api/runtime'),
+  restartRuntime: () =>
+    request<{ ok: boolean; message: string }>('/api/runtime/restart', { method: 'POST' }),
   shutdownRuntime: () =>
     request<{ ok: boolean; message: string }>('/api/runtime/shutdown', { method: 'POST' }),
   watchRuntimeLogs: (onChunk: (chunk: string) => void, onError: () => void) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/runtime/logs`)
-    socket.onmessage = (event) => onChunk(String(event.data))
-    socket.onerror = onError
-    return () => socket.close(1000)
+    const url = `${protocol}//${window.location.host}/api/runtime/logs`
+    let socket: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let stopped = false
+    const connect = () => {
+      if (stopped) return
+      const nextSocket = new WebSocket(url)
+      socket = nextSocket
+      nextSocket.onmessage = (event) => onChunk(String(event.data))
+      nextSocket.onerror = onError
+      nextSocket.onclose = () => {
+        if (!stopped) reconnectTimer = window.setTimeout(connect, 1_000)
+      }
+    }
+    connect()
+    return () => {
+      stopped = true
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+      socket?.close(1000)
+    }
   },
   project: () => request<ProjectInfo>('/api/project'),
+  assistantHistory: () =>
+    request<ProjectAssistantHistory>('/api/project/codex-history'),
+  saveAssistantHistory: (history: ProjectAssistantHistory) =>
+    request<ProjectAssistantHistory>('/api/project/codex-history', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(history),
+    }),
   browseDirectories: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : ''
     return request<DirectoryListing>(`/api/project/directories${query}`)
@@ -114,6 +155,18 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspace, main_file: mainFile }),
+    }),
+  createProject: (parent: string, name: string | null) =>
+    request<ProjectInfo>('/api/project/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent, name }),
+    }),
+  selectCompilationRoot: (mainFile: string) =>
+    request<ProjectInfo>('/api/project/compilation-root', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ main_file: mainFile }),
     }),
   tree: () => request<TreeNode[]>('/api/project/tree'),
   read: (path: string) => request<FileContent>(`/api/files/${encodePath(path)}`),
@@ -193,5 +246,11 @@ export const api = {
     context: AssistantContext,
     startedAt: number,
     onProgress: (progress: AssistantProgress) => void,
-  ) => progressChat(messages, context, startedAt, onProgress),
+    requestId: string,
+    signal: AbortSignal,
+  ) => progressChat(messages, context, startedAt, onProgress, requestId, signal),
+  cancelAssistant: (requestId: string) =>
+    request<{ ok: boolean; message: string }>(`/api/assistant/cancel/${requestId}`, {
+      method: 'POST',
+    }),
 }

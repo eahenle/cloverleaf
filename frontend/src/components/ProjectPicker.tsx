@@ -5,14 +5,17 @@ import type { DirectoryListing, ProjectInfo } from '../types'
 
 type Props = {
   currentProject: ProjectInfo
+  mode: 'load' | 'new'
   onClose: () => void
   onLoad: (workspace: string, mainFile: string) => Promise<void>
+  onCreate: (parent: string, name: string | null) => Promise<void>
 }
 
-export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
+export function ProjectPicker({ currentProject, mode, onClose, onLoad, onCreate }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [mainFile, setMainFile] = useState('')
+  const [directoryName, setDirectoryName] = useState('')
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -27,6 +30,7 @@ export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
     try {
       const next = await api.browseDirectories(path)
       setListing(next)
+      setDirectoryName('')
       const preferred =
         next.path === currentProject.workspace && next.tex_files.includes(currentProject.main_file)
           ? currentProject.main_file
@@ -51,11 +55,15 @@ export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
   }, [currentProject.workspace, navigate])
 
   const choose = async () => {
-    if (!listing || !mainFile || submitting) return
+    if (!listing || (mode === 'load' && !mainFile) || submitting) return
     setSubmitting(true)
     setError('')
     try {
-      await onLoad(listing.path, mainFile)
+      if (mode === 'new') {
+        await onCreate(listing.path, directoryName.trim() || null)
+      } else {
+        await onLoad(listing.path, mainFile)
+      }
       onClose()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -63,6 +71,8 @@ export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
       setSubmitting(false)
     }
   }
+
+  const isNew = mode === 'new'
 
   return (
     <dialog
@@ -80,8 +90,12 @@ export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
       <div className="project-picker-card">
         <header>
           <div>
-            <h2 id="project-picker-title">Load project</h2>
-            <p>Choose a folder containing a LaTeX compilation root.</p>
+            <h2 id="project-picker-title">{isNew ? 'New project' : 'Load project'}</h2>
+            <p>
+              {isNew
+                ? 'Choose a root folder, or create a new folder inside it.'
+                : 'Choose a folder containing a LaTeX compilation root.'}
+            </p>
           </div>
           <button
             type="button"
@@ -148,20 +162,42 @@ export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
           )}
         </div>
 
-        <label className="picker-root">
-          <span>Compilation root</span>
-          <select
-            value={mainFile}
-            onChange={(event) => setMainFile(event.target.value)}
-            disabled={loading}
-            aria-label="Compilation root"
-          >
-            {!listing?.tex_files.length && (
-              <option value="main.tex">main.tex (will be created)</option>
-            )}
-            {listing?.tex_files.map((file) => <option key={file}>{file}</option>)}
-          </select>
-        </label>
+        {isNew ? (
+          <div className="picker-new-project">
+            <label>
+              <span>New folder</span>
+              <input
+                value={directoryName}
+                onChange={(event) => setDirectoryName(event.target.value)}
+                disabled={loading || submitting}
+                placeholder="Optional folder name"
+                aria-label="New folder name"
+                maxLength={255}
+                autoComplete="off"
+              />
+            </label>
+            <p>
+              {directoryName.trim()
+                ? 'Cloverleaf will create this folder and initialize main.tex inside it.'
+                : 'Cloverleaf will initialize main.tex in the selected folder.'}
+            </p>
+          </div>
+        ) : (
+          <label className="picker-root">
+            <span>Compilation root</span>
+            <select
+              value={mainFile}
+              onChange={(event) => setMainFile(event.target.value)}
+              disabled={loading}
+              aria-label="Compilation root"
+            >
+              {!listing?.tex_files.length && (
+                <option value="main.tex">main.tex (will be created)</option>
+              )}
+              {listing?.tex_files.map((file) => <option key={file}>{file}</option>)}
+            </select>
+          </label>
+        )}
 
         {error && <div className="picker-error" role="alert">{error}</div>}
 
@@ -178,9 +214,13 @@ export function ProjectPicker({ currentProject, onClose, onLoad }: Props) {
             type="button"
             className="primary-button"
             onClick={() => void choose()}
-            disabled={!listing || !mainFile || loading || submitting}
+            disabled={!listing || (!isNew && !mainFile) || loading || submitting}
           >
-            {submitting ? 'Loading…' : 'Open project'}
+            {submitting
+              ? isNew ? 'Creating…' : 'Loading…'
+              : isNew
+                ? directoryName.trim() ? 'Create project' : 'Create project here'
+                : 'Open project'}
           </button>
         </footer>
       </div>

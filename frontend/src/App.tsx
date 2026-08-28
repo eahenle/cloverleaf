@@ -18,6 +18,19 @@ const initialStatus: CompileStatus = {
 
 type EditIntent = { id: number; path: string }
 
+function pendingReviewMessageIndex(
+  messages: ChatMessage[],
+  dismissedEditKeys: Set<string>,
+): number | null {
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const edits = messages[messageIndex].edits ?? []
+    if (edits.some((_edit, editIndex) => !dismissedEditKeys.has(`${messageIndex}-${editIndex}`))) {
+      return messageIndex
+    }
+  }
+  return null
+}
+
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null)
   const [tree, setTree] = useState<TreeNode[]>([])
@@ -30,9 +43,14 @@ export default function App() {
   const [status, setStatus] = useState<CompileStatus>(initialStatus)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [assistantBusy, setAssistantBusy] = useState(false)
+  const [assistantCancelling, setAssistantCancelling] = useState(false)
+  const [assistantQueue, setAssistantQueue] = useState<string[]>([])
+  const [assistantReviewMessageIndex, setAssistantReviewMessageIndex] = useState<number | null>(null)
+  const [dismissedEditKeys, setDismissedEditKeys] = useState<Set<string>>(new Set())
   const [assistantProgress, setAssistantProgress] = useState<AssistantProgress | null>(null)
   const [projectLoading, setProjectLoading] = useState(false)
-  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [compilationRootBusy, setCompilationRootBusy] = useState(false)
+  const [projectPickerMode, setProjectPickerMode] = useState<'load' | 'new' | null>(null)
   const [toast, setToast] = useState('')
 
   const pathRef = useRef(path)
@@ -43,9 +61,60 @@ export default function App() {
   const externalWarningVersionRef = useRef<string | null>(null)
   const editVersionRef = useRef(0)
   const saveCountRef = useRef(0)
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const messagesRef = useRef<ChatMessage[]>([])
+  const assistantQueueRef = useRef<string[]>([])
+  const assistantReviewMessageIndexRef = useRef<number | null>(null)
+  const dismissedEditKeysRef = useRef<Set<string>>(new Set())
+  const historyWorkspaceRef = useRef<string | null>(null)
+  const historySaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const assistantRunningRef = useRef(false)
+  const assistantCancelRequestedRef = useRef(false)
+  const assistantCancelledQueueCountRef = useRef(0)
+  const activeAssistantRequestRef = useRef<{
+    requestId: string
+    controller: AbortController
+  } | null>(null)
+  const assistantContextRef = useRef({ project, selectedText, status })
   const toastTimerRef = useRef<number | null>(null)
   const initializedRef = useRef(false)
   const switchingProjectRef = useRef(false)
+
+  useEffect(() => {
+    assistantContextRef.current = { project, selectedText, status }
+  }, [project, selectedText, status])
+
+  const replaceMessages = useCallback((nextMessages: ChatMessage[]) => {
+    messagesRef.current = nextMessages
+    setMessages(nextMessages)
+  }, [])
+
+  const replaceAssistantQueue = useCallback((nextQueue: string[]) => {
+    assistantQueueRef.current = nextQueue
+    setAssistantQueue(nextQueue)
+  }, [])
+
+  const replaceAssistantReview = useCallback((messageIndex: number | null) => {
+    assistantReviewMessageIndexRef.current = messageIndex
+    setAssistantReviewMessageIndex(messageIndex)
+  }, [])
+
+  const replaceDismissedEditKeys = useCallback((nextKeys: Set<string>) => {
+    dismissedEditKeysRef.current = nextKeys
+    setDismissedEditKeys(nextKeys)
+  }, [])
+
+  const restoreAssistantHistory = useCallback((history: {
+    workspace: string
+    messages: ChatMessage[]
+    dismissed_edit_keys: string[]
+  }) => {
+    const restoredDismissed = new Set(history.dismissed_edit_keys)
+    historyWorkspaceRef.current = history.workspace
+    replaceMessages(history.messages)
+    replaceDismissedEditKeys(restoredDismissed)
+    replaceAssistantReview(pendingReviewMessageIndex(history.messages, restoredDismissed))
+  }, [replaceAssistantReview, replaceDismissedEditKeys, replaceMessages])
 
   const updatePath = useCallback((nextPath: string | null) => {
     pathRef.current = nextPath
@@ -69,33 +138,66 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), 5000)
   }, [])
 
+  useEffect(() => {
+    const workspace = project?.workspace
+    if (!workspace || historyWorkspaceRef.current !== workspace) return
+    const snapshot = {
+      version: 1 as const,
+      workspace,
+      messages,
+      dismissed_edit_keys: [...dismissedEditKeys],
+    }
+    const operation = historySaveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (historyWorkspaceRef.current !== workspace) return
+        await api.saveAssistantHistory(snapshot)
+      })
+    historySaveQueueRef.current = operation.catch(() => undefined)
+    void operation.catch((reason) => {
+      if (historyWorkspaceRef.current === workspace) showError(reason)
+    })
+  }, [dismissedEditKeys, messages, project?.workspace, showError])
+
   const refreshTree = useCallback(async () => {
     setTree(await api.tree())
   }, [])
 
-  const saveCurrent = useCallback(async (requestCompile: boolean) => {
+  const saveCurrent = useCallback((requestCompile: boolean): Promise<void> => {
     const targetPath = pathRef.current
     if (!targetPath) {
-      if (requestCompile) setStatus(await api.compile())
-      return
+      return requestCompile
+        ? api.compile().then((nextStatus) => setStatus(nextStatus))
+        : Promise.resolve()
     }
     const snapshot = contentRef.current
     const version = editVersionRef.current
+    const scheduledFileVersion = fileVersionRef.current
     saveCountRef.current += 1
     setSaving(true)
-    try {
-      const saved = await api.write(targetPath, snapshot, fileVersionRef.current)
-      if (pathRef.current === targetPath) {
-        fileVersionRef.current = saved.version ?? null
-        syncedContentRef.current = snapshot
-        externalWarningVersionRef.current = null
-        if (editVersionRef.current === version) updateDirty(false)
-      }
-      if (requestCompile) setStatus(await api.compile())
-    } finally {
-      saveCountRef.current -= 1
-      if (saveCountRef.current === 0) setSaving(false)
-    }
+
+    const operation = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          const expectedVersion = pathRef.current === targetPath
+            ? fileVersionRef.current
+            : scheduledFileVersion
+          const saved = await api.write(targetPath, snapshot, expectedVersion)
+          if (pathRef.current === targetPath) {
+            fileVersionRef.current = saved.version ?? null
+            syncedContentRef.current = snapshot
+            externalWarningVersionRef.current = null
+            if (editVersionRef.current === version) updateDirty(false)
+          }
+          if (requestCompile) setStatus(await api.compile())
+        } finally {
+          saveCountRef.current -= 1
+          if (saveCountRef.current === 0) setSaving(false)
+        }
+      })
+    saveQueueRef.current = operation.catch(() => undefined)
+    return operation
   }, [updateDirty])
 
   const openFile = useCallback(async (nextPath: string) => {
@@ -119,6 +221,24 @@ export default function App() {
   const saveAndCompile = useCallback(() => {
     setEditIntent(null)
     void saveCurrent(true).catch(showError)
+  }, [saveCurrent, showError])
+
+  const compileOpenView = useCallback(() => {
+    const targetPath = pathRef.current
+    if (!targetPath || !/\.tex$/i.test(targetPath)) return
+    void (async () => {
+      setCompilationRootBusy(true)
+      try {
+        setEditIntent(null)
+        await saveCurrent(false)
+        const updated = await api.selectCompilationRoot(targetPath)
+        setProject(updated)
+        setStatus(initialStatus)
+        setStatus(await api.compile())
+      } finally {
+        setCompilationRootBusy(false)
+      }
+    })().catch(showError)
   }, [saveCurrent, showError])
 
   const editorChanged = useCallback((value: string) => {
@@ -216,12 +336,14 @@ export default function App() {
     void (async () => {
       await api.health()
       const currentProject = await api.project()
+      const history = await api.assistantHistory()
       setProject(currentProject)
+      restoreAssistantHistory(history)
       await refreshTree()
       await openFile(currentProject.main_file)
       await requestCompile()
     })().catch(showError)
-  }, [openFile, refreshTree, requestCompile, showError])
+  }, [openFile, refreshTree, requestCompile, restoreAssistantHistory, showError])
 
   useEffect(
     () => () => {
@@ -241,13 +363,16 @@ export default function App() {
     })().catch(showError)
   }
 
-  const loadProject = async (workspace: string, mainFile: string) => {
+  const switchProject = async (activate: () => Promise<ProjectInfo>) => {
+    const previousHistoryWorkspace = historyWorkspaceRef.current
+    historyWorkspaceRef.current = null
     switchingProjectRef.current = true
     setProjectLoading(true)
     try {
       if (pathRef.current) await saveCurrent(false)
       setEditIntent(null)
-      const loaded = await api.loadProject(workspace, mainFile)
+      const loaded = await activate()
+      const history = await api.assistantHistory()
       const nextTree = await api.tree()
       const file = await api.read(loaded.main_file)
       fileVersionRef.current = file.version ?? null
@@ -259,15 +384,25 @@ export default function App() {
       updateContent(file.content)
       updateDirty(false)
       setSelectedText('')
-      setMessages([])
+      replaceAssistantQueue([])
+      restoreAssistantHistory(history)
       setAssistantProgress(null)
       setStatus(initialStatus)
       await requestCompile()
     } finally {
+      if (historyWorkspaceRef.current === null) {
+        historyWorkspaceRef.current = previousHistoryWorkspace
+      }
       switchingProjectRef.current = false
       setProjectLoading(false)
     }
   }
+
+  const loadProject = (workspace: string, mainFile: string) =>
+    switchProject(() => api.loadProject(workspace, mainFile))
+
+  const createProject = (parent: string, name: string | null) =>
+    switchProject(() => api.createProject(parent, name))
 
   const renameEntry = (oldPath: string) => {
     const value = window.prompt('Rename to', oldPath)
@@ -305,40 +440,145 @@ export default function App() {
     })().catch(showError)
   }
 
-  const sendMessage = async (message: string) => {
-    const next: ChatMessage[] = [...messages, { role: 'user', content: message }]
-    setMessages(next)
+  const runAssistantRounds = useCallback(async (firstMessage: string) => {
+    assistantRunningRef.current = true
+    assistantCancelRequestedRef.current = false
+    assistantCancelledQueueCountRef.current = 0
     setAssistantBusy(true)
-    const startedAt = Date.now()
-    setAssistantProgress({
-      phase: 'preparing',
-      message: 'Preparing the open-file context…',
-      activity_count: 0,
-      heartbeat: false,
-      received_at: startedAt,
-      started_at: startedAt,
-    })
+    let message: string | undefined = firstMessage
     try {
-      const result = await api.chat(next, {
-        main_file: project?.main_file ?? null,
-        open_file: pathRef.current,
-        open_file_content: contentRef.current,
-        selected_text: selectedText || null,
-        diagnostics: status.diagnostics,
-        compile_state: status.state,
-        compile_log: status.log_tail,
-      }, startedAt, setAssistantProgress)
-      setMessages([...next, { role: 'assistant', content: result.message, edits: result.proposed_edits }])
-    } catch (reason) {
-      showError(reason)
-      setMessages([...next, {
-        role: 'assistant',
-        content: reason instanceof Error ? reason.message : 'The assistant could not answer.',
-      }])
+      while (message !== undefined) {
+        const next: ChatMessage[] = [
+          ...messagesRef.current,
+          { role: 'user', content: message },
+        ]
+        replaceMessages(next)
+        const startedAt = Date.now()
+        setAssistantProgress({
+          phase: 'preparing',
+          message: 'Preparing the open-file context…',
+          activity_count: 0,
+          heartbeat: false,
+          received_at: startedAt,
+          started_at: startedAt,
+        })
+        const requestId = crypto.randomUUID()
+        const controller = new AbortController()
+        activeAssistantRequestRef.current = { requestId, controller }
+        try {
+          const { project: activeProject, selectedText: activeSelection, status: activeStatus } =
+            assistantContextRef.current
+          const result = await api.chat(next, {
+            main_file: activeProject?.main_file ?? null,
+            open_file: pathRef.current,
+            open_file_content: contentRef.current,
+            selected_text: activeSelection || null,
+            diagnostics: activeStatus.diagnostics,
+            compile_state: activeStatus.state,
+            compile_log: activeStatus.log_tail,
+          }, startedAt, setAssistantProgress, requestId, controller.signal)
+          if (assistantCancelRequestedRef.current) {
+            const cleared = assistantCancelledQueueCountRef.current
+            replaceMessages([...next, {
+              role: 'assistant',
+              content: `Codex turn cancelled.${cleared ? ` ${cleared} queued round${cleared === 1 ? '' : 's'} cleared.` : ''}`,
+            }])
+          } else {
+            const responseMessage: ChatMessage = {
+              role: 'assistant',
+              content: result.message,
+              edits: result.proposed_edits,
+              warnings: result.warnings,
+            }
+            replaceMessages([...next, responseMessage])
+            if (result.proposed_edits.length > 0) {
+              replaceAssistantReview(next.length)
+            }
+          }
+        } catch (reason) {
+          if (assistantCancelRequestedRef.current || (reason instanceof DOMException && reason.name === 'AbortError')) {
+            const cleared = assistantCancelledQueueCountRef.current
+            replaceMessages([...next, {
+              role: 'assistant',
+              content: `Codex turn cancelled.${cleared ? ` ${cleared} queued round${cleared === 1 ? '' : 's'} cleared.` : ''}`,
+            }])
+          } else {
+            showError(reason)
+            replaceMessages([...next, {
+              role: 'assistant',
+              content: reason instanceof Error ? reason.message : 'The assistant could not answer.',
+            }])
+          }
+        } finally {
+          if (activeAssistantRequestRef.current?.requestId === requestId) {
+            activeAssistantRequestRef.current = null
+          }
+        }
+
+        if (assistantCancelRequestedRef.current) break
+        if (assistantReviewMessageIndexRef.current !== null) break
+        const [queuedMessage, ...remainingQueue] = assistantQueueRef.current
+        replaceAssistantQueue(remainingQueue)
+        message = queuedMessage
+      }
     } finally {
+      assistantRunningRef.current = false
       setAssistantBusy(false)
+      setAssistantCancelling(false)
       setAssistantProgress(null)
+      assistantCancelRequestedRef.current = false
+      assistantCancelledQueueCountRef.current = 0
+      activeAssistantRequestRef.current = null
     }
+  }, [replaceAssistantQueue, replaceAssistantReview, replaceMessages, showError])
+
+  const cancelAssistant = useCallback(() => {
+    const active = activeAssistantRequestRef.current
+    if (!active || assistantCancelRequestedRef.current) return
+    assistantCancelRequestedRef.current = true
+    assistantCancelledQueueCountRef.current = assistantQueueRef.current.length
+    replaceAssistantQueue([])
+    setAssistantCancelling(true)
+    void api.cancelAssistant(active.requestId)
+      .catch(() => undefined)
+      .finally(() => active.controller.abort())
+    window.setTimeout(() => active.controller.abort(), 750)
+  }, [replaceAssistantQueue])
+
+  const sendMessage = useCallback((message: string) => {
+    if (assistantCancelRequestedRef.current) return
+    if (assistantRunningRef.current || assistantReviewMessageIndexRef.current !== null) {
+      replaceAssistantQueue([...assistantQueueRef.current, message])
+      return
+    }
+    void runAssistantRounds(message)
+  }, [replaceAssistantQueue, runAssistantRounds])
+
+  const resolveAssistantEdits = useCallback((editKeys: string[]) => {
+    const nextDismissed = new Set(dismissedEditKeysRef.current)
+    editKeys.forEach((key) => nextDismissed.add(key))
+    replaceDismissedEditKeys(nextDismissed)
+    const pendingReview = pendingReviewMessageIndex(messagesRef.current, nextDismissed)
+    replaceAssistantReview(pendingReview)
+    if (pendingReview !== null) return
+    const startNextRound = () => {
+      if (assistantRunningRef.current) {
+        window.setTimeout(startNextRound, 0)
+        return
+      }
+      const [queuedMessage, ...remainingQueue] = assistantQueueRef.current
+      if (queuedMessage === undefined) return
+      replaceAssistantQueue(remainingQueue)
+      void runAssistantRounds(queuedMessage)
+    }
+    window.setTimeout(startNextRound, 0)
+  }, [replaceAssistantQueue, replaceAssistantReview, replaceDismissedEditKeys, runAssistantRounds])
+
+  const fixCompileError = () => {
+    if (status.state !== 'error' || assistantBusy) return
+    void sendMessage(
+      'Fix the current LaTeX compilation failure. Inspect the compiler diagnostics and relevant project files, then propose the smallest safe edit needed to make the manuscript compile. Preserve unrelated content.',
+    )
   }
 
   const applyEdits = async (edits: ProposedEdit[]): Promise<boolean> => {
@@ -390,7 +630,8 @@ export default function App() {
                 tree={tree}
                 activePath={path}
                 onOpen={(nextPath) => void openFile(nextPath).catch(showError)}
-                onLoadProject={() => setProjectPickerOpen(true)}
+                onLoadProject={() => setProjectPickerMode('load')}
+                onNewProject={() => setProjectPickerMode('new')}
                 loadDisabled={!project || assistantBusy || projectLoading}
                 onCreate={createEntry}
                 onRename={renameEntry}
@@ -399,7 +640,13 @@ export default function App() {
             </Panel>
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize project and compiler panels" />
             <Panel defaultSize={33} minSize={20}>
-              <ProjectStatus status={status} onCompile={saveAndCompile} />
+              <ProjectStatus
+                status={status}
+                mainFile={project?.main_file ?? 'main.tex'}
+                onCompile={saveAndCompile}
+                onFixWithCodex={fixCompileError}
+                codexBusy={assistantBusy}
+              />
             </Panel>
           </PanelGroup>
         </Panel>
@@ -409,35 +656,51 @@ export default function App() {
             path={path}
             value={content}
             saveState={saving ? 'saving…' : dirty ? 'modified' : path ? 'saved' : '—'}
+            isCompilationRoot={path === project?.main_file}
+            compilationRootBusy={compilationRootBusy}
             onChange={editorChanged}
             onSelection={setSelectedText}
             onSaveAndCompile={saveAndCompile}
+            onCompileView={compileOpenView}
           />
         </Panel>
         <PanelResizeHandle className="resize-handle" aria-label="Resize editor and preview panels" />
         <Panel defaultSize={33} minSize={23}>
           <PanelGroup direction="vertical" autoSaveId="cloverleaf-right">
             <Panel defaultSize={59} minSize={28}>
-              <PdfPreview status={status} projectKey={project?.workspace ?? null} />
+              <PdfPreview
+                status={status}
+                projectKey={project ? `${project.workspace}:${project.main_file}` : null}
+                mainFile={project?.main_file ?? null}
+                onError={showError}
+              />
             </Panel>
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize preview and assistant panels" />
             <Panel defaultSize={41} minSize={24}>
               <Assistant
                 messages={messages}
                 busy={assistantBusy}
+                cancelling={assistantCancelling}
+                reviewMessageIndex={assistantReviewMessageIndex}
+                dismissedEditKeys={dismissedEditKeys}
+                queuedMessages={assistantQueue}
                 progress={assistantProgress}
-                onSend={(message) => void sendMessage(message)}
+                onSend={sendMessage}
+                onCancel={cancelAssistant}
+                onResolveEdits={resolveAssistantEdits}
                 onApplyEdits={applyEdits}
               />
             </Panel>
           </PanelGroup>
         </Panel>
       </PanelGroup>
-      {projectPickerOpen && project && (
+      {projectPickerMode && project && (
         <ProjectPicker
           currentProject={project}
-          onClose={() => setProjectPickerOpen(false)}
+          mode={projectPickerMode}
+          onClose={() => setProjectPickerMode(null)}
           onLoad={loadProject}
+          onCreate={createProject}
         />
       )}
       {toast && <div className="toast" role="alert">{toast}</div>}

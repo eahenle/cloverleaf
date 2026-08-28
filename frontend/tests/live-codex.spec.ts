@@ -1,7 +1,9 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import path from 'node:path'
+import { clearAssistantHistory } from './history'
 
 test.skip(process.env.CLOVERLEAF_LIVE_CODEX !== '1', 'Set CLOVERLEAF_LIVE_CODEX=1 to use authenticated Codex')
+test.beforeEach(async ({ request }) => clearAssistantHistory(request))
 
 async function ask(page: Page, prompt: string): Promise<string> {
   const responses = page.locator('.message.assistant')

@@ -53,6 +53,14 @@ export type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   edits?: ProposedEdit[]
+  warnings?: string[]
+}
+
+export type ProjectAssistantHistory = {
+  version: 1
+  workspace: string
+  messages: ChatMessage[]
+  dismissed_edit_keys: string[]
 }
 
 export type AssistantContext = {
@@ -68,6 +76,7 @@ export type AssistantContext = {
 export type AssistantResponse = {
   message: string
   proposed_edits: ProposedEdit[]
+  warnings?: string[]
 }
 
 export type AssistantProgress = {
@@ -83,4 +92,20 @@ export type RuntimeInfo = {
   managed: boolean
   log_available: boolean
   shutdown_available: boolean
+  restart_available: boolean
+}
+
+export type ServiceCondition = 'healthy' | 'degraded' | 'unavailable'
+
+export type ServiceStatus = {
+  id: string
+  name: string
+  condition: ServiceCondition
+  detail: string
+}
+
+export type SystemStatus = {
+  overall: 'healthy' | 'degraded'
+  checked_at: string
+  services: ServiceStatus[]
 }

@@ -135,11 +135,7 @@ class Compiler:
             try:
                 process = await asyncio.create_subprocess_exec(
                     executable,
-                    "-pdf",
-                    "-interaction=nonstopmode",
-                    "-halt-on-error",
-                    "-file-line-error",
-                    self.main_file,
+                    *self.latexmk_arguments,
                     cwd=self.workspace,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
@@ -174,3 +170,17 @@ class Compiler:
     @property
     def pdf_path(self) -> Path:
         return self.workspace / Path(self.main_file).with_suffix(".pdf")
+
+    @property
+    def latexmk_arguments(self) -> tuple[str, ...]:
+        arguments = [
+            "-pdf",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-file-line-error",
+        ]
+        output_directory = Path(self.main_file).parent
+        if output_directory != Path("."):
+            arguments.append(f"-output-directory={output_directory.as_posix()}")
+        arguments.append(self.main_file)
+        return tuple(arguments)

@@ -1,8 +1,11 @@
+import asyncio
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -320,6 +323,57 @@ async def test_codex_provider_uses_developer_preamble_and_structured_output(
     assert captured["turn"]["output_schema"] == ASSISTANT_OUTPUT_SCHEMA
 
 
+async def test_cancelling_codex_provider_interrupts_the_sdk_turn(monkeypatch) -> None:
+    import openai_codex
+
+    started = asyncio.Event()
+    interrupted = asyncio.Event()
+    context_exited = asyncio.Event()
+
+    class FakeTurn:
+        async def stream(self):
+            started.set()
+            await asyncio.Future()
+            yield None
+
+        async def interrupt(self):
+            interrupted.set()
+
+    class FakeThread:
+        async def turn(self, _prompt, **_kwargs):
+            return FakeTurn()
+
+    class FakeCodex:
+        def __init__(self, _config):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _tb):
+            context_exited.set()
+
+        async def thread_start(self, **_kwargs):
+            return FakeThread()
+
+    monkeypatch.setattr(openai_codex, "AsyncCodex", FakeCodex)
+    provider = CodexProvider("gpt-test", "/projects/manuscript", "/usr/bin/codex")
+    task = asyncio.create_task(
+        provider.chat(
+            [AssistantMessage(role="user", content="Keep working")],
+            AssistantContext(main_file="main.tex"),
+        )
+    )
+
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert interrupted.is_set()
+    assert context_exited.is_set()
+
+
 class CapturingProvider(AssistantProvider):
     def __init__(self) -> None:
         self.context: AssistantContext | None = None
@@ -454,9 +508,77 @@ def test_assistant_rejects_unsafe_edit_paths(tmp_path: Path) -> None:
             json={"messages": [{"role": "user", "content": "Revise it"}], "context": {}},
         )
 
-    assert response.status_code == 503
-    assert "safe project file boundary" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["proposed_edits"] == []
+    assert response.json()["warnings"] == [
+        "Cloverleaf rejected an edit outside the active project or inside its protected "
+        '.git directory: "../outside.tex".'
+    ]
     assert not (tmp_path / "outside.tex").exists()
+
+
+class MixedPathProvider(AssistantProvider):
+    async def chat(
+        self, messages: list[AssistantMessage], context: AssistantContext
+    ) -> AssistantResponse:
+        return AssistantResponse(
+            message="Prepared the safe parts of the request.",
+            proposed_edits=[
+                {
+                    "path": "../outside.tex",
+                    "summary": "Unsafe edit",
+                    "replacements": [{"old_text": "", "new_text": "outside"}],
+                },
+                {
+                    "path": "main.tex",
+                    "summary": "Safe edit",
+                    "replacements": [
+                        {
+                            "old_text": "original manuscript",
+                            "new_text": "revised manuscript",
+                        }
+                    ],
+                },
+            ],
+        )
+
+
+def test_assistant_keeps_valid_edits_when_an_outside_edit_is_rejected(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("original manuscript", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, MixedPathProvider())) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={"messages": [{"role": "user", "content": "Revise it"}], "context": {}},
+        )
+
+    assert response.status_code == 200
+    assert [edit["path"] for edit in response.json()["proposed_edits"]] == ["main.tex"]
+    assert len(response.json()["warnings"]) == 1
+
+
+def test_assistant_accepts_absolute_in_project_and_hidden_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hidden = workspace / ".config" / "cloverleaf.toml"
+    provider = ReplacementProvider(
+        [{"old_text": "", "new_text": "enabled = true\n"}],
+        str(hidden),
+    )
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={"messages": [{"role": "user", "content": "Configure it"}], "context": {}},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["warnings"] == []
+    assert response.json()["proposed_edits"][0]["path"] == ".config/cloverleaf.toml"
 
 
 class ReplacementProvider(AssistantProvider):
@@ -543,6 +665,47 @@ def test_compact_assistant_replacement_can_create_a_file(tmp_path: Path) -> None
     assert not (workspace / "sections/new.tex").exists()
 
 
+def test_compact_assistant_replacement_can_create_and_apply_project_skill(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
+    skill_path = ".codex/skills/manuscript-editor/SKILL.md"
+    skill_content = "---\nname: manuscript-editor\n---\n\nEdit the manuscript.\n"
+    provider = ReplacementProvider(
+        [{"old_text": "", "new_text": skill_content}],
+        skill_path,
+    )
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={"messages": [{"role": "user", "content": "Create a project skill"}], "context": {}},
+        )
+        edit = response.json()["proposed_edits"][0]
+        applied = client.post(
+            "/api/files/apply",
+            json={
+                "edits": [
+                    {
+                        "path": edit["path"],
+                        "content": edit["content"],
+                        "version": edit["version"],
+                        "is_new": edit["is_new"],
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert edit["path"] == skill_path
+    assert edit["is_new"] is True
+    assert applied.status_code == 200
+    assert (workspace / skill_path).read_text(encoding="utf-8") == skill_content
+
+
 class SlowProgressProvider(AssistantProvider):
     async def chat(
         self, messages: list[AssistantMessage], context: AssistantContext
@@ -594,6 +757,61 @@ def test_assistant_progress_socket_reports_phases_and_heartbeats(
         "connecting",
         "responding",
     ]
+
+
+class CancellableProgressProvider(AssistantProvider):
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.cancelled = threading.Event()
+
+    async def chat(self, messages, context):
+        return await self.chat_with_progress(messages, context, lambda *_update: None)
+
+    async def chat_with_progress(self, messages, context, progress):
+        progress("working", "Waiting for cancellation…")
+        self.started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
+def test_running_assistant_turn_can_be_cancelled(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+    provider = CancellableProgressProvider()
+    request_id = "12345678-1234-1234-1234-123456789abc"
+    responses = []
+
+    with TestClient(create_app(settings, provider)) as client:
+        request_thread = threading.Thread(
+            target=lambda: responses.append(
+                client.post(
+                    "/api/assistant/chat",
+                    json={
+                        "messages": [{"role": "user", "content": "Keep working"}],
+                        "context": {},
+                        "request_id": request_id,
+                    },
+                )
+            )
+        )
+        request_thread.start()
+        assert provider.started.wait(timeout=2)
+
+        cancelled = client.post(f"/api/assistant/cancel/{request_id}")
+        request_thread.join(timeout=2)
+
+        assert cancelled.status_code == 202
+        assert not request_thread.is_alive()
+        assert responses[0].status_code == 409
+        assert responses[0].json()["detail"] == "Codex turn was cancelled"
+        assert provider.cancelled.is_set()
+        assert client.app.state.assistant_tasks == {}
+        assert client.post("/api/assistant/cancel/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").status_code == 404
 
 
 def test_assistant_request_id_is_bounded(tmp_path: Path) -> None:

@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 import path from 'node:path'
+import { clearAssistantHistory } from './history'
+
+test.beforeEach(async ({ request }) => clearAssistantHistory(request))
 
 async function drag(page: Page, label: string, axis: 'x' | 'y', amount: number) {
   const handle = page.getByLabel(label)

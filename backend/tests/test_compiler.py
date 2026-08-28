@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cloverleaf.compiler import Compiler, parse_diagnostics
+from cloverleaf.compiler import Compiler, find_latexmk, parse_diagnostics
 
 
 def test_parse_diagnostics_with_file_lines_and_warnings() -> None:
@@ -25,6 +25,43 @@ LaTeX Warning: Label `missing' multiply defined on input line 18.
     assert "Missing } inserted" in diagnostics[1].message
     assert diagnostics[2].severity == "warning"
     assert diagnostics[2].line == 18
+
+
+def test_nested_compilation_root_keeps_outputs_beside_source(tmp_path: Path) -> None:
+    root_compiler = Compiler(tmp_path, "main.tex")
+    nested_compiler = Compiler(tmp_path, "opportunities/nvidia-jr2015929/resume.tex")
+
+    assert not any(
+        argument.startswith("-output-directory=")
+        for argument in root_compiler.latexmk_arguments
+    )
+    assert nested_compiler.latexmk_arguments[-2:] == (
+        "-output-directory=opportunities/nvidia-jr2015929",
+        "opportunities/nvidia-jr2015929/resume.tex",
+    )
+    assert nested_compiler.pdf_path == (
+        tmp_path / "opportunities/nvidia-jr2015929/resume.pdf"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nested_compilation_writes_no_root_artifacts(tmp_path: Path) -> None:
+    if find_latexmk() is None:
+        pytest.skip("latexmk is unavailable")
+    opportunity = tmp_path / "opportunities" / "example-role"
+    opportunity.mkdir(parents=True)
+    source = opportunity / "resume.tex"
+    source.write_text(
+        "\\documentclass{article}\\begin{document}Nested output\\end{document}\n",
+        encoding="utf-8",
+    )
+
+    status = await Compiler(tmp_path, "opportunities/example-role/resume.tex").wait()
+
+    assert status.state == "success"
+    assert (opportunity / "resume.pdf").is_file()
+    assert not (tmp_path / "resume.pdf").exists()
+    assert not (tmp_path / "resume.aux").exists()
 
 
 @pytest.mark.asyncio

@@ -3,25 +3,32 @@ import CodeMirror from '@uiw/react-codemirror'
 import { StreamLanguage } from '@codemirror/language'
 import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { EditorView, keymap } from '@codemirror/view'
-import { Save } from 'lucide-react'
+import { LoaderCircle, Play, Save } from 'lucide-react'
 
 type Props = {
   path: string | null
   value: string
   saveState: string
+  isCompilationRoot: boolean
+  compilationRootBusy: boolean
   onChange: (value: string) => void
   onSelection: (value: string) => void
   onSaveAndCompile: () => void
+  onCompileView: () => void
 }
 
 export function Editor({
   path,
   value,
   saveState,
+  isCompilationRoot,
+  compilationRootBusy,
   onChange,
   onSelection,
   onSaveAndCompile,
+  onCompileView,
 }: Props) {
+  const canCompileView = Boolean(path && /\.tex$/i.test(path) && !isCompilationRoot)
   const extensions = useMemo(
     () => [
       StreamLanguage.define(stex),
@@ -55,6 +62,19 @@ export function Editor({
       <header className="panel-header">
         <span>{path ?? 'No file open'}</span>
         <span className="editor-status-group">
+          {canCompileView && (
+            <button
+              className="text-button compile-view-button"
+              type="button"
+              onClick={onCompileView}
+              disabled={compilationRootBusy}
+              title="Use this file as the compilation root and render its PDF"
+              aria-label={`Compile ${path} as the current view`}
+            >
+              {compilationRootBusy ? <LoaderCircle className="spin" size={11} /> : <Play size={11} />}
+              {compilationRootBusy ? 'Switching…' : 'Compile this view'}
+            </button>
+          )}
           <span className="save-state" aria-live="polite">{saveState}</span>
           <button
             className="icon-button"

@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     runtime_shutdown_file: str = Field(
         default="", validation_alias="CLOVERLEAF_RUNTIME_SHUTDOWN"
     )
+    runtime_restart_file: str = Field(
+        default="", validation_alias="CLOVERLEAF_RUNTIME_RESTART"
+    )
 
     @staticmethod
     def _optional_path(value: str) -> Path | None:
@@ -42,6 +45,10 @@ class Settings(BaseSettings):
     @property
     def runtime_shutdown_path(self) -> Path | None:
         return self._optional_path(self.runtime_shutdown_file)
+
+    @property
+    def runtime_restart_path(self) -> Path | None:
+        return self._optional_path(self.runtime_restart_file)
 
     @field_validator("workspace")
     @classmethod

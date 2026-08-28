@@ -23,6 +23,7 @@ LOG_PATH = RUNTIME_DIR / "server.log"
 STATE_PATH = RUNTIME_DIR / "state.json"
 LOCK_PATH = RUNTIME_DIR / "launcher.lock"
 SHUTDOWN_PATH = RUNTIME_DIR / "shutdown"
+RESTART_PATH = RUNTIME_DIR / "restart"
 MAX_LOG_BYTES = 1_000_000
 
 
@@ -137,6 +138,7 @@ def child_environment() -> dict[str, str]:
         {
             "CLOVERLEAF_RUNTIME_LOG": str(LOG_PATH),
             "CLOVERLEAF_RUNTIME_SHUTDOWN": str(SHUTDOWN_PATH),
+            "CLOVERLEAF_RUNTIME_RESTART": str(RESTART_PATH),
             "NO_COLOR": "1",
             "PYTHONUNBUFFERED": "1",
         }
@@ -160,6 +162,8 @@ def child_commands() -> list[tuple[str, list[str], Path]]:
                 "--port",
                 "8000",
                 "--reload",
+                "--reload-dir",
+                "backend/cloverleaf",
                 "--timeout-graceful-shutdown",
                 "2",
             ],
@@ -177,6 +181,7 @@ def supervise(*, foreground: bool) -> int:
         return 0
 
     SHUTDOWN_PATH.unlink(missing_ok=True)
+    RESTART_PATH.unlink(missing_ok=True)
     runtime_log = RuntimeLog(LOG_PATH)
     commands = child_commands()
     processes: list[tuple[str, subprocess.Popen[str]]] = []
@@ -190,7 +195,8 @@ def supervise(*, foreground: bool) -> int:
     signal.signal(signal.SIGTERM, request_stop)
 
     exit_code = 0
-    try:
+
+    def start_children() -> None:
         for name, command, cwd in commands:
             runtime_log.write("launcher", f"Starting {name}")
             process = subprocess.Popen(
@@ -218,6 +224,24 @@ def supervise(*, foreground: bool) -> int:
                 reader.start()
                 readers.append(reader)
 
+    def stop_children() -> None:
+        for _name, process in processes:
+            stop(process)
+        for name, process in processes:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                runtime_log.write("launcher", f"Force-stopping {name}")
+                stop(process, signal.SIGKILL)
+                process.wait(timeout=5)
+        for reader in readers:
+            reader.join(timeout=1)
+        processes.clear()
+        readers.clear()
+
+    try:
+        start_children()
+
         write_state(os.getpid())
         runtime_log.write("launcher", "Cloverleaf is available at http://127.0.0.1:5173")
         if foreground:
@@ -232,6 +256,13 @@ def supervise(*, foreground: bool) -> int:
                 runtime_log.write("launcher", "Shutdown requested from the Cloverleaf UI")
                 stopping.set()
                 break
+            if RESTART_PATH.exists():
+                RESTART_PATH.unlink(missing_ok=True)
+                runtime_log.write("launcher", "Restart requested from the Cloverleaf UI")
+                stop_children()
+                start_children()
+                runtime_log.write("launcher", "Cloverleaf services restarted")
+                continue
             exited = [(name, process) for name, process in processes if process.poll() is not None]
             if exited:
                 name, process = exited[0]
@@ -244,17 +275,7 @@ def supervise(*, foreground: bool) -> int:
         exit_code = 1
         runtime_log.write("launcher", f"Launcher failed: {exc}")
     finally:
-        for _name, process in processes:
-            stop(process)
-        for name, process in processes:
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                runtime_log.write("launcher", f"Force-stopping {name}")
-                stop(process, signal.SIGKILL)
-                process.wait(timeout=5)
-        for reader in readers:
-            reader.join(timeout=1)
+        stop_children()
         runtime_log.write("launcher", "Cloverleaf stopped")
         try:
             state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -263,6 +284,7 @@ def supervise(*, foreground: bool) -> int:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
         SHUTDOWN_PATH.unlink(missing_ok=True)
+        RESTART_PATH.unlink(missing_ok=True)
         runtime_log.close()
         lock_handle.close()
     return exit_code

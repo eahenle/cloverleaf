@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  BookPlus,
   ChevronDown,
   ChevronRight,
   FilePlus2,
@@ -17,6 +18,7 @@ type Props = {
   activePath: string | null
   onOpen: (path: string) => void
   onLoadProject: () => void
+  onNewProject: () => void
   loadDisabled: boolean
   onCreate: (type: 'file' | 'directory') => void
   onRename: (path: string) => void
@@ -34,6 +36,7 @@ export function FileTree({
   activePath,
   onOpen,
   onLoadProject,
+  onNewProject,
   loadDisabled,
   onCreate,
   onRename,
@@ -115,6 +118,15 @@ export function FileTree({
       <header className="panel-header">
         <span>Project</span>
         <span className="panel-actions">
+          <button
+            type="button"
+            onClick={onNewProject}
+            disabled={loadDisabled}
+            title="New project"
+            aria-label="New project"
+          >
+            <BookPlus size={14} />
+          </button>
           <button
             type="button"
             onClick={onLoadProject}

@@ -22,10 +22,15 @@ IGNORED_SUFFIXES = {
     ".synctex.gz",
     ".toc",
 }
+IGNORED_DIRECTORIES = {".cloverleaf", ".git"}
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
 
 
 class WorkspaceError(ValueError):
+    pass
+
+
+class WorkspaceBoundaryError(WorkspaceError):
     pass
 
 
@@ -48,10 +53,12 @@ class Workspace:
             decoded = expanded
         return decoded
 
-    @staticmethod
-    def is_hidden_build_file(path: Path) -> bool:
+    def is_hidden_build_file(self, path: Path) -> bool:
         name = path.name
-        return name.startswith(".") or any(name.endswith(suffix) for suffix in IGNORED_SUFFIXES)
+        relative = PurePosixPath(path.relative_to(self.root).as_posix())
+        return any(part.casefold() in IGNORED_DIRECTORIES for part in relative.parts) or any(
+            name.endswith(suffix) for suffix in IGNORED_SUFFIXES
+        )
 
     def resolve(self, raw_path: str, *, must_exist: bool = False) -> Path:
         decoded = self._decode(raw_path)
@@ -60,27 +67,44 @@ class Workspace:
         if (
             not decoded
             or "\x00" in decoded
+            or not pure.parts
             or pure.is_absolute()
             or WINDOWS_ABSOLUTE.match(normalized)
-            or any(part in {"", ".", ".."} or part.startswith(".") for part in pure.parts)
+            or any(part in {"", ".", ".."} for part in pure.parts)
         ):
-            raise WorkspaceError("Path must be a visible relative path inside the workspace")
-        if any(pure.name.endswith(suffix) for suffix in IGNORED_SUFFIXES):
-            raise WorkspaceError("LaTeX build artifacts are not available through the file API")
+            raise WorkspaceBoundaryError("Path must be relative and remain inside the project")
+        if any(part.casefold() == ".git" for part in pure.parts):
+            raise WorkspaceBoundaryError("Git repository internals are managed by Cloverleaf")
 
         target = self.root.joinpath(*pure.parts)
-        cursor = self.root
-        for part in pure.parts:
-            cursor = cursor / part
-            if cursor.is_symlink():
-                raise WorkspaceError("Symbolic links are not available through the file API")
-
         resolved = target.resolve(strict=False)
         if not resolved.is_relative_to(self.root):
-            raise WorkspaceError("Path escapes the workspace")
+            raise WorkspaceBoundaryError("Path escapes the project")
+        resolved_relative = PurePosixPath(resolved.relative_to(self.root).as_posix())
+        if any(part.casefold() == ".git" for part in resolved_relative.parts):
+            raise WorkspaceBoundaryError("Git repository internals are managed by Cloverleaf")
         if must_exist and not target.exists():
             raise FileNotFoundError(raw_path)
         return target
+
+    def resolve_assistant_path(self, raw_path: str) -> tuple[Path, str]:
+        """Normalize relative or absolute-in-project model output to a safe relative path."""
+
+        decoded = self._decode(raw_path)
+        normalized = decoded.replace("\\", "/")
+        if WINDOWS_ABSOLUTE.match(normalized):
+            raise WorkspaceBoundaryError("Path is outside the active project")
+        pure = PurePosixPath(normalized)
+        if pure.is_absolute():
+            candidate = Path(normalized).resolve(strict=False)
+            if not candidate.is_relative_to(self.root):
+                raise WorkspaceBoundaryError("Path is outside the active project")
+            canonical = candidate.relative_to(self.root).as_posix()
+        else:
+            canonical = pure.as_posix()
+        target = self.resolve(canonical)
+        canonical = target.relative_to(self.root).as_posix()
+        return target, canonical
 
     def tree(self) -> list[TreeNode]:
         def visit(directory: Path) -> list[TreeNode]:

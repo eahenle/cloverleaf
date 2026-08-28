@@ -23,6 +23,11 @@ if [ "$#" -ne 0 ]; then
     exit 2
 fi
 
+if [ "$check_only" = false ] && ! command -v multi-cli >/dev/null 2>&1; then
+    echo "multi-cli is required to launch the codex/personal profile" >&2
+    exit 127
+fi
+
 make test
 make lint
 make typecheck
@@ -31,5 +36,6 @@ make compile
 make test-e2e
 
 if [ "$check_only" = false ]; then
-    exec ./cloverleaf
+    ./cloverleaf
+    exec multi-cli codex/personal
 fi

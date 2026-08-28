@@ -34,10 +34,25 @@ class LoadProject(BaseModel):
     main_file: str = "main.tex"
 
 
+class CreateProject(BaseModel):
+    parent: str
+    name: str | None = Field(default=None, max_length=255)
+
+
+class SelectCompilationRoot(BaseModel):
+    main_file: str
+
+
 class ProjectInfo(BaseModel):
     workspace: str
     name: str
     main_file: str
+
+
+class RepositoryInfo(BaseModel):
+    initialized: bool
+    head: str | None = None
+    last_error: str | None = None
 
 
 class DirectoryEntry(BaseModel):
@@ -97,6 +112,20 @@ class ProposedEdit(BaseModel):
     is_new: bool = False
 
 
+class StoredAssistantMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    edits: list[ProposedEdit] = Field(default_factory=list, max_length=20)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProjectAssistantHistory(BaseModel):
+    version: Literal[1] = 1
+    workspace: str
+    messages: list[StoredAssistantMessage] = Field(default_factory=list)
+    dismissed_edit_keys: list[str] = Field(default_factory=list)
+
+
 class ApplyEdit(BaseModel):
     path: str
     content: str
@@ -126,6 +155,7 @@ class AssistantRequest(BaseModel):
 class AssistantResponse(BaseModel):
     message: str
     proposed_edits: list[ProposedEdit] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AssistantProgress(BaseModel):
