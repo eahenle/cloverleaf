@@ -34,6 +34,7 @@ async function responseError(response: Response): Promise<string> {
 async function progressChat(
   messages: ChatMessage[],
   context: AssistantContext,
+  attachedPaths: string[],
   startedAt: number,
   onProgress: (progress: AssistantProgress) => void,
 ): Promise<AssistantResponse> {
@@ -80,6 +81,7 @@ async function progressChat(
       body: JSON.stringify({
         messages: messages.map(({ role, content }) => ({ role, content })),
         context,
+        attached_paths: attachedPaths,
         request_id: requestId,
       }),
     })
@@ -191,7 +193,8 @@ export const api = {
   chat: (
     messages: ChatMessage[],
     context: AssistantContext,
+    attachedPaths: string[],
     startedAt: number,
     onProgress: (progress: AssistantProgress) => void,
-  ) => progressChat(messages, context, startedAt, onProgress),
+  ) => progressChat(messages, context, attachedPaths, startedAt, onProgress),
 }

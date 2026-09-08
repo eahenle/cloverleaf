@@ -21,6 +21,7 @@ OPEN_FILE_MAX_CHARS = 300_000
 SELECTED_TEXT_MAX_CHARS = 100_000
 DIAGNOSTICS_MAX_CHARS = 40_000
 COMPILE_LOG_MAX_CHARS = 60_000
+ATTACHED_FILES_MAX_CHARS = 180_000
 CONVERSATION_MAX_CHARS = 120_000
 
 ASSISTANT_DEVELOPER_INSTRUCTIONS = """You are the project agent embedded in Cloverleaf, a local LaTeX research-authoring IDE.
@@ -157,6 +158,13 @@ def build_codex_prompt(
     compile_log = _truncate_start(
         context.compile_log, COMPILE_LOG_MAX_CHARS, "compiler log"
     )
+    attached_files = _truncate_middle(
+        "\n\n".join(
+            f"--- {file.path} ---\n{file.content}" for file in context.attached_files
+        ) or "(none)",
+        ATTACHED_FILES_MAX_CHARS,
+        "attached files",
+    )
     runtime_guidance = (
         "You can inspect the current workspace with read-only runtime tools. Cloverleaf "
         "intentionally does not serialize the project tree into this request."
@@ -171,6 +179,7 @@ def build_codex_prompt(
         f"OPEN FILE: {context.open_file or '(none)'}\n"
         f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
         f"SELECTED TEXT:\n{selected_text}\n\n"
+        f"ATTACHED FILES:\n{attached_files}\n\n"
         f"COMPILER DIAGNOSTICS:\n{diagnostics}\n\n"
         f"COMPILER LOG TAIL:\n{compile_log or '(none)'}\n\n"
         f"CONVERSATION:\n{transcript}"

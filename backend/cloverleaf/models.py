@@ -81,6 +81,7 @@ class AssistantContext(BaseModel):
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     compile_state: Literal["idle", "compiling", "success", "error"] = "idle"
     compile_log: str = ""
+    attached_files: list[FileContent] = Field(default_factory=list, max_length=20)
 
 
 class TextReplacement(BaseModel):
@@ -115,6 +116,7 @@ class ApplyEditsResponse(BaseModel):
 class AssistantRequest(BaseModel):
     messages: list[AssistantMessage]
     context: AssistantContext
+    attached_paths: list[str] = Field(default_factory=list, max_length=20)
     request_id: str | None = Field(
         default=None,
         min_length=36,

@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
-import { Check, Send, X } from 'lucide-react'
+import { Check, Paperclip, Send, X } from 'lucide-react'
 import type { AssistantProgress, ChatMessage, ProposedEdit } from '../types'
 import { ServerTerminal } from './ServerTerminal'
 
@@ -7,16 +7,26 @@ type Props = {
   messages: ChatMessage[]
   busy: boolean
   progress: AssistantProgress | null
-  onSend: (message: string) => void
+  availableFiles: string[]
+  onSend: (message: string, attachedFiles: string[]) => void
   onApplyEdits: (edits: ProposedEdit[]) => Promise<boolean>
 }
 
-export function Assistant({ messages, busy, progress, onSend, onApplyEdits }: Props) {
+export function Assistant({ messages, busy, progress, availableFiles, onSend, onApplyEdits }: Props) {
   const [draft, setDraft] = useState('')
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [activeTab, setActiveTab] = useState<'codex' | 'terminal'>('codex')
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([])
   const [now, setNow] = useState(Date.now())
   const messageListRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setAttachedFiles((current) => {
+      const available = new Set(availableFiles)
+      const next = current.filter((file) => available.has(file))
+      return next.length === current.length ? current : next
+    })
+  }, [availableFiles])
 
   useEffect(() => {
     const messageList = messageListRef.current
@@ -35,7 +45,8 @@ export function Assistant({ messages, busy, progress, onSend, onApplyEdits }: Pr
     const message = draft.trim()
     if (!message || busy) return
     setDraft('')
-    onSend(message)
+    onSend(message, attachedFiles)
+    setAttachedFiles([])
   }
 
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -173,6 +184,42 @@ export function Assistant({ messages, busy, progress, onSend, onApplyEdits }: Pr
             )}
           </div>
           <form className="chat-input" onSubmit={submit}>
+            {attachedFiles.length > 0 && (
+              <div className="assistant-attachments" aria-label="Attached files">
+                {attachedFiles.map((file) => (
+                  <span key={file}>
+                    {file}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${file}`}
+                      onClick={() => setAttachedFiles((current) => current.filter((item) => item !== file))}
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <label className="attach-picker" title="Attach a project file">
+              <Paperclip size={14} />
+              <span className="sr-only">Attach a project file</span>
+              <select
+                aria-label="Attach a project file"
+                value=""
+                disabled={busy || attachedFiles.length >= 20}
+                onChange={(event) => {
+                  const file = event.target.value
+                  if (file) {
+                    setAttachedFiles((current) => current.includes(file) ? current : [...current, file])
+                  }
+                }}
+              >
+                <option value="">Attach file…</option>
+                {availableFiles.filter((file) => !attachedFiles.includes(file)).map((file) => (
+                  <option key={file} value={file}>{file}</option>
+                ))}
+              </select>
+            </label>
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}

@@ -110,6 +110,29 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
   })
 })
 
+test('assistant sends attached paths without browser-supplied file contents', async ({ page }) => {
+  let requestBody: Record<string, unknown> | undefined
+  await page.route('**/api/assistant/chat', (route) => {
+    requestBody = route.request().postDataJSON() as Record<string, unknown>
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'Inspected the attachment.', proposed_edits: [] }),
+    })
+  })
+
+  await page.goto('/')
+  await page.getByLabel('Attach a project file').selectOption('main.tex')
+  await expect(page.getByLabel('Attached files')).toContainText('main.tex')
+  await page.getByLabel('Message Codex').fill('Inspect the attached file')
+  await page.getByLabel('Send message').click()
+  await expect(page.locator('.message.assistant').last()).toContainText('Inspected the attachment')
+
+  expect(requestBody).toMatchObject({ attached_paths: ['main.tex'] })
+  expect(requestBody?.context).not.toHaveProperty('attached_files')
+  await expect(page.getByLabel('Attached files')).toHaveCount(0)
+})
+
 test('a confirmed Codex edit creates the reviewed file', async ({ page, request }) => {
   const filePath = 'codex-review-note.txt'
   await request.delete(`/api/files/${filePath}`).catch(() => undefined)

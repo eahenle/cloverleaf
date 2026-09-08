@@ -355,6 +355,7 @@ def test_assistant_receives_complete_context_without_credentials(tmp_path: Path)
                 {"severity": "error", "message": "Undefined control sequence", "line": 4}
             ],
         },
+        "attached_paths": ["main.tex", "main.tex"],
     }
 
     with TestClient(app) as client:
@@ -381,7 +382,34 @@ def test_assistant_receives_complete_context_without_credentials(tmp_path: Path)
     assert provider.context.diagnostics[0].message == "Authoritative compiler diagnostic"
     assert provider.context.compile_state == "error"
     assert provider.context.compile_log == "authoritative compiler detail"
+    assert provider.context.attached_files[0].content == "manuscript"
+    assert provider.context.attached_files[0].version is not None
+    assert len(provider.context.attached_files) == 1
     assert "server-secret" not in response.text
+
+
+def test_assistant_rejects_unsafe_attachment_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect this"}],
+                "context": {},
+                "attached_paths": ["../secret.tex"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Path must be a visible relative path inside the workspace"
+    )
+    assert provider.context is None
 
 
 class EditProvider(AssistantProvider):

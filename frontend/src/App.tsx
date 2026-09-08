@@ -18,6 +18,10 @@ const initialStatus: CompileStatus = {
 
 type EditIntent = { id: number; path: string }
 
+function treeFiles(nodes: TreeNode[]): string[] {
+  return nodes.flatMap((node) => node.type === 'file' ? [node.path] : treeFiles(node.children))
+}
+
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null)
   const [tree, setTree] = useState<TreeNode[]>([])
@@ -305,7 +309,7 @@ export default function App() {
     })().catch(showError)
   }
 
-  const sendMessage = async (message: string) => {
+  const sendMessage = async (message: string, attachedPaths: string[]) => {
     const next: ChatMessage[] = [...messages, { role: 'user', content: message }]
     setMessages(next)
     setAssistantBusy(true)
@@ -327,7 +331,7 @@ export default function App() {
         diagnostics: status.diagnostics,
         compile_state: status.state,
         compile_log: status.log_tail,
-      }, startedAt, setAssistantProgress)
+      }, attachedPaths, startedAt, setAssistantProgress)
       setMessages([...next, { role: 'assistant', content: result.message, edits: result.proposed_edits }])
     } catch (reason) {
       showError(reason)
@@ -426,7 +430,8 @@ export default function App() {
                 messages={messages}
                 busy={assistantBusy}
                 progress={assistantProgress}
-                onSend={(message) => void sendMessage(message)}
+                availableFiles={treeFiles(tree)}
+                onSend={(message, attachedFiles) => void sendMessage(message, attachedFiles)}
                 onApplyEdits={applyEdits}
               />
             </Panel>
