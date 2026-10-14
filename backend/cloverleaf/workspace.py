@@ -108,16 +108,31 @@ class Workspace:
         content, _version = self.read_versioned(path)
         return content
 
-    def read_versioned(self, path: str) -> tuple[str, str]:
+    def read_versioned(
+        self, path: str, *, max_bytes: int | None = None,
+    ) -> tuple[str, str]:
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("The file byte limit must be non-negative")
         target = self.resolve(path, must_exist=True)
         if not target.is_file():
             raise IsADirectoryError(path)
         try:
             for _attempt in range(2):
-                before = target.stat().st_mtime_ns
-                content = target.read_text(encoding="utf-8")
+                before = target.stat()
+                if max_bytes is None:
+                    content = target.read_text(encoding="utf-8")
+                else:
+                    if before.st_size > max_bytes:
+                        raise WorkspaceError(f"{path} exceeds the {max_bytes:,}-byte limit")
+                    with target.open("rb") as source:
+                        # A file can grow after stat; never read it without a bound.
+                        raw = source.read(max_bytes + 1)
+                    if len(raw) > max_bytes:
+                        raise WorkspaceError(f"{path} exceeds the {max_bytes:,}-byte limit")
+                    # Match read_text's universal newlines and existing version hashes.
+                    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
                 after = target.stat().st_mtime_ns
-                if before == after:
+                if before.st_mtime_ns == after:
                     return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
             raise FileChangedError(f"{path} changed while Cloverleaf was reading it")
         except UnicodeDecodeError as exc:

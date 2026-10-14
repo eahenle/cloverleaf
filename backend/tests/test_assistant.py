@@ -501,6 +501,66 @@ def test_assistant_rejects_unsafe_attachment_paths(tmp_path: Path) -> None:
     assert provider.context is None
 
 
+def test_assistant_rejects_oversized_attachment_before_provider_call(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text("manuscript", encoding="utf-8")
+    (tmp_path / "large.txt").write_bytes(b"x" * (1024 * 1024 + 1))
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=tmp_path, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect this"}],
+                "context": {},
+                "attached_paths": ["main.tex", "large.txt"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "large.txt" in response.json()["detail"]
+    assert "1,048,576-byte limit" in response.json()["detail"]
+    assert provider.context is None
+
+
+def test_assistant_accepts_and_deduplicates_exact_byte_limit_attachment(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from cloverleaf.workspace import Workspace
+
+    (tmp_path / "main.tex").write_text("manuscript", encoding="utf-8")
+    content = "🙂" * (1024 * 1024 // 4)
+    (tmp_path / "boundary.txt").write_text(content, encoding="utf-8")
+    original_read = Workspace.read_versioned
+    reads = []
+
+    def tracked_read(workspace, path, **kwargs):
+        if path == "boundary.txt":
+            reads.append(kwargs.get("max_bytes"))
+        return original_read(workspace, path, **kwargs)
+
+    monkeypatch.setattr(Workspace, "read_versioned", tracked_read)
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=tmp_path, AI_PROVIDER="disabled")
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect this"}],
+                "context": {},
+                "attached_paths": ["boundary.txt", "boundary.txt"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert provider.context is not None
+    assert len(provider.context.attached_files) == 1
+    attachment = provider.context.attached_files[0]
+    assert attachment.content == content
+    assert attachment.version == original_read(Workspace(tmp_path), "boundary.txt")[1]
+    assert reads == [1024 * 1024]
+
+
 class EditProvider(AssistantProvider):
     def __init__(self, path: str = "main.tex") -> None:
         self.path = path
