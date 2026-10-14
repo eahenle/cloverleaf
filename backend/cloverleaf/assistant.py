@@ -9,7 +9,7 @@ from typing import Callable
 
 import httpx
 
-from .models import AssistantContext, AssistantMessage, AssistantResponse, ProposedEdit
+from .models import AssistantContext, AssistantMessage, AssistantResponse, FileContent, ProposedEdit
 
 
 logger = logging.getLogger(__name__)
@@ -118,9 +118,33 @@ def _truncate_middle(value: str, limit: int, label: str) -> str:
     if len(value) <= limit:
         return value
     marker = f"\n… [{len(value) - limit:,} characters omitted from {label}] …\n"
+    if len(marker) >= limit:
+        return marker[:max(0, limit)]
     available = max(0, limit - len(marker))
     before = (available * 2) // 3
     return value[:before] + marker + value[-(available - before) :]
+
+
+def _format_attached_files(files: list[FileContent], limit: int) -> str:
+    if not files:
+        return "(none)"
+
+    # Reserve the complete manifest before distributing space to file contents.
+    headers = [f"--- {file.path} ---\n" for file in files]
+    remaining = limit - sum(map(len, headers)) - 2 * (len(files) - 1)
+    if remaining < 0:
+        raise AssistantUnavailable("The attachment paths exceed the available context budget.")
+
+    contents = [""] * len(files)
+    # Short files keep their full contents and leave unused space for larger files.
+    by_size = sorted(range(len(files)), key=lambda index: len(files[index].content))
+    for position, index in enumerate(by_size):
+        file = files[index]
+        contents[index] = _truncate_middle(
+            file.content, remaining // (len(files) - position), file.path
+        )
+        remaining -= len(contents[index])
+    return "\n\n".join(header + content for header, content in zip(headers, contents))
 
 
 def _truncate_start(value: str, limit: int, label: str) -> str:
@@ -158,20 +182,13 @@ def build_codex_prompt(
     compile_log = _truncate_start(
         context.compile_log, COMPILE_LOG_MAX_CHARS, "compiler log"
     )
-    attached_files = _truncate_middle(
-        "\n\n".join(
-            f"--- {file.path} ---\n{file.content}" for file in context.attached_files
-        ) or "(none)",
-        ATTACHED_FILES_MAX_CHARS,
-        "attached files",
-    )
     runtime_guidance = (
         "You can inspect the current workspace with read-only runtime tools. Cloverleaf "
         "intentionally does not serialize the project tree into this request."
         if can_inspect_workspace
         else "No project tools or serialized project tree are available for this request."
     )
-    prompt = (
+    before_attachments = (
         f"RUNTIME ACCESS: {runtime_guidance}\n"
         f"WORKSPACE ROOT: {workspace_root or '(not available)'}\n"
         f"COMPILATION ROOT: {context.main_file or '(not available)'}\n"
@@ -179,11 +196,20 @@ def build_codex_prompt(
         f"OPEN FILE: {context.open_file or '(none)'}\n"
         f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
         f"SELECTED TEXT:\n{selected_text}\n\n"
-        f"ATTACHED FILES:\n{attached_files}\n\n"
+        "ATTACHED FILES:\n"
+    )
+    after_attachments = (
+        "\n\n"
         f"COMPILER DIAGNOSTICS:\n{diagnostics}\n\n"
         f"COMPILER LOG TAIL:\n{compile_log or '(none)'}\n\n"
         f"CONVERSATION:\n{transcript}"
     )
+    attachment_budget = min(
+        ATTACHED_FILES_MAX_CHARS,
+        CODEX_MAX_PROMPT_CHARS - len(before_attachments) - len(after_attachments),
+    )
+    attached_files = _format_attached_files(context.attached_files, attachment_budget)
+    prompt = before_attachments + attached_files + after_attachments
     if len(prompt) > CODEX_MAX_PROMPT_CHARS:
         raise AssistantUnavailable(
             "The assistant request is too large even after compacting the project context. "

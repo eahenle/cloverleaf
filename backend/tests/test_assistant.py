@@ -3,17 +3,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from cloverleaf.assistant import (
     ASSISTANT_DEVELOPER_INSTRUCTIONS,
     ASSISTANT_OUTPUT_SCHEMA,
+    ATTACHED_FILES_MAX_CHARS,
     CODEX_MAX_PROMPT_CHARS,
     AssistantProvider,
     CodexProvider,
     OpenAICompatibleProvider,
     _consume_codex_turn,
+    _truncate_middle,
     build_codex_prompt,
     codex_event_progress,
     parse_response,
@@ -26,6 +29,7 @@ from cloverleaf.models import (
     AssistantResponse,
     CompileStatus,
     Diagnostic,
+    FileContent,
 )
 
 
@@ -202,6 +206,91 @@ def test_assistant_prompt_keeps_latest_message_with_large_history() -> None:
     assert "LATEST REQUEST MUST SURVIVE" in prompt
     assert "earlier characters omitted from conversation" in prompt
     assert "old request 0" not in prompt
+
+
+@pytest.mark.parametrize("can_inspect_workspace", [True, False])
+def test_attachment_compaction_preserves_every_file_identity(
+    can_inspect_workspace: bool,
+) -> None:
+    files = [
+        FileContent(
+            path=f"sections/part-{index:02}.tex",
+            content=f"START-{index:02}\n" + "x" * 40_000 + f"\nEND-{index:02}",
+        )
+        for index in range(20)
+    ]
+    prompt = build_codex_prompt(
+        [AssistantMessage(role="user", content="Inspect every attachment")],
+        AssistantContext(attached_files=files),
+        can_inspect_workspace=can_inspect_workspace,
+    )
+
+    attachments = prompt.split("ATTACHED FILES:\n", 1)[1].split(
+        "\n\nCOMPILER DIAGNOSTICS:", 1
+    )[0]
+    assert len(attachments) <= ATTACHED_FILES_MAX_CHARS
+    assert [file.path for file in files if f"--- {file.path} ---" not in attachments] == []
+    for index, file in enumerate(files):
+        assert attachments.count(f"--- {file.path} ---") == 1
+        assert f"START-{index:02}" in attachments
+        assert f"END-{index:02}" in attachments
+        assert f"characters omitted from {file.path}" in attachments
+
+
+@pytest.mark.parametrize("can_inspect_workspace", [True, False])
+def test_attachments_fit_with_all_other_context_sections_at_their_limits(
+    can_inspect_workspace: bool,
+) -> None:
+    files = [
+        FileContent(path=f"sections/part-{index}.tex", content="a" * 40_000)
+        for index in range(20)
+    ]
+    context = AssistantContext(
+        main_file="paper.tex",
+        open_file="main.tex",
+        open_file_content="o" * 400_000 + "OPEN FILE END",
+        selected_text="s" * 200_000,
+        diagnostics=[Diagnostic(severity="error", message="d" * 80_000)],
+        compile_log="l" * 100_000 + "LOG END",
+        attached_files=files,
+    )
+    messages = [
+        AssistantMessage(role="assistant", content="h" * 200_000),
+        AssistantMessage(role="user", content="LATEST REQUEST MUST SURVIVE"),
+    ]
+
+    prompt = build_codex_prompt(
+        messages,
+        context,
+        can_inspect_workspace=can_inspect_workspace,
+        workspace_root="/projects/word-salad",
+    )
+
+    assert len(prompt) <= CODEX_MAX_PROMPT_CHARS
+    assert prompt.endswith("USER: LATEST REQUEST MUST SURVIVE")
+    assert "OPEN FILE END" in prompt
+    assert "LOG END" in prompt
+    for file in files:
+        assert f"--- {file.path} ---" in prompt
+
+
+def test_attachment_compaction_preserves_short_files_and_original_order() -> None:
+    files = [
+        FileContent(path="large.tex", content="x" * 300_000),
+        FileContent(path="small.tex", content="Keep this complete."),
+        FileContent(path="empty.tex", content=""),
+    ]
+    prompt = build_codex_prompt([], AssistantContext(attached_files=files))
+
+    assert "--- small.tex ---\nKeep this complete." in prompt
+    assert "--- empty.tex ---\n" in prompt
+    assert prompt.index("--- large.tex ---") < prompt.index("--- small.tex ---")
+    assert prompt.index("--- small.tex ---") < prompt.index("--- empty.tex ---")
+
+
+@pytest.mark.parametrize("limit", [0, 1, 20, 50, 51, 52, 53, 54, 55, 60])
+def test_middle_compaction_respects_tiny_content_budgets(limit: int) -> None:
+    assert len(_truncate_middle("x" * 1000, limit, "attachment.tex")) <= limit
 
 
 async def test_openai_compatible_provider_uses_bounded_context(monkeypatch) -> None:
