@@ -427,6 +427,7 @@ export default function App() {
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize preview and assistant panels" />
             <Panel defaultSize={41} minSize={24}>
               <Assistant
+                key={project?.workspace ?? 'no-project'}
                 messages={messages}
                 busy={assistantBusy}
                 progress={assistantProgress}
