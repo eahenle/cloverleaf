@@ -17,6 +17,7 @@ from cloverleaf.assistant import (
     CodexProvider,
     OpenAICompatibleProvider,
     _consume_codex_turn,
+    _truncate_middle,
     build_codex_prompt,
     codex_event_progress,
     parse_response,
@@ -29,6 +30,7 @@ from cloverleaf.models import (
     AssistantResponse,
     CompileStatus,
     Diagnostic,
+    FileContent,
 )
 
 
@@ -397,9 +399,11 @@ def test_assistant_receives_complete_context_without_credentials(tmp_path: Path)
     )
     app = create_app(settings, provider)
     body = {
+        "attached_paths": ["main.tex", "main.tex"],
         "messages": [{"role": "user", "content": "Explain this"}],
         "context": {
             "main_file": "wrong.tex",
+            "attached_files": [{"path": "main.tex", "content": "forged browser content"}],
             "open_file": "main.tex",
             "open_file_content": "manuscript",
             "selected_text": "script",
@@ -435,6 +439,9 @@ def test_assistant_receives_complete_context_without_credentials(tmp_path: Path)
     assert provider.context.diagnostics[0].message == "Authoritative compiler diagnostic"
     assert provider.context.compile_state == "error"
     assert provider.context.compile_log == "authoritative compiler detail"
+    assert len(provider.context.attached_files) == 1
+    assert provider.context.attached_files[0].content == "manuscript"
+    assert provider.context.attached_files[0].version is not None
     assert "server-secret" not in response.text
 
 
@@ -777,7 +784,8 @@ class CancellableProgressProvider(AssistantProvider):
             raise
 
 
-def test_running_assistant_turn_can_be_cancelled(tmp_path: Path) -> None:
+@pytest.mark.parametrize("attached_paths", [[], ["main.tex"]])
+def test_running_assistant_turn_can_be_cancelled(tmp_path: Path, attached_paths) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
@@ -794,6 +802,7 @@ def test_running_assistant_turn_can_be_cancelled(tmp_path: Path) -> None:
                     json={
                         "messages": [{"role": "user", "content": "Keep working"}],
                         "context": {},
+                        "attached_paths": attached_paths,
                         "request_id": request_id,
                     },
                 )
@@ -811,6 +820,7 @@ def test_running_assistant_turn_can_be_cancelled(tmp_path: Path) -> None:
         assert responses[0].json()["detail"] == "Codex turn was cancelled"
         assert provider.cancelled.is_set()
         assert client.app.state.assistant_tasks == {}
+        assert not client.app.state.project_lock.locked()
         assert client.post("/api/assistant/cancel/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").status_code == 404
 
 
@@ -831,3 +841,254 @@ def test_assistant_request_id_is_bounded(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("can_inspect_workspace", [True, False])
+def test_attachment_compaction_preserves_every_file_identity(
+    can_inspect_workspace: bool,
+) -> None:
+    files = [
+        FileContent(
+            path=f"sections/part-{index:02}.tex",
+            content=f"START-{index:02}\n" + "x" * 40_000 + f"\nEND-{index:02}",
+        )
+        for index in range(20)
+    ]
+    prompt = build_codex_prompt(
+        [AssistantMessage(role="user", content="Inspect every attachment")],
+        AssistantContext(attached_files=files),
+        can_inspect_workspace=can_inspect_workspace,
+    )
+
+    attachments = prompt.split("ATTACHED FILES:\n", 1)[1].split(
+        "\n\nCOMPILER DIAGNOSTICS:", 1
+    )[0]
+    assert len(attachments) <= 180_000
+    assert [file.path for file in files if f"--- {file.path} ---" not in attachments] == []
+    for index, file in enumerate(files):
+        assert attachments.count(f"--- {file.path} ---") == 1
+        assert f"START-{index:02}" in attachments
+        assert f"END-{index:02}" in attachments
+        assert f"characters omitted from {file.path}" in attachments
+
+
+@pytest.mark.parametrize("can_inspect_workspace", [True, False])
+def test_attachments_fit_with_all_other_context_sections_at_their_limits(
+    can_inspect_workspace: bool,
+) -> None:
+    files = [
+        FileContent(path=f"sections/part-{index}.tex", content="a" * 40_000)
+        for index in range(20)
+    ]
+    context = AssistantContext(
+        main_file="paper.tex",
+        open_file="main.tex",
+        open_file_content="o" * 400_000 + "OPEN FILE END",
+        selected_text="s" * 200_000,
+        diagnostics=[Diagnostic(severity="error", message="d" * 80_000)],
+        compile_log="l" * 100_000 + "LOG END",
+        attached_files=files,
+    )
+    messages = [
+        AssistantMessage(role="assistant", content="h" * 200_000),
+        AssistantMessage(role="user", content="LATEST REQUEST MUST SURVIVE"),
+    ]
+
+    prompt = build_codex_prompt(
+        messages,
+        context,
+        can_inspect_workspace=can_inspect_workspace,
+        workspace_root="/projects/word-salad",
+    )
+
+    assert len(prompt) <= CODEX_MAX_PROMPT_CHARS
+    assert prompt.endswith("USER: LATEST REQUEST MUST SURVIVE")
+    assert "OPEN FILE END" in prompt
+    assert "LOG END" in prompt
+    for file in files:
+        assert f"--- {file.path} ---" in prompt
+
+
+def test_attachment_compaction_preserves_short_files_and_original_order() -> None:
+    files = [
+        FileContent(path="large.tex", content="x" * 300_000),
+        FileContent(path="small.tex", content="Keep this complete."),
+        FileContent(path="empty.tex", content=""),
+    ]
+    prompt = build_codex_prompt([], AssistantContext(attached_files=files))
+
+    assert "--- small.tex ---\nKeep this complete." in prompt
+    assert "--- empty.tex ---\n" in prompt
+    assert prompt.index("--- large.tex ---") < prompt.index("--- small.tex ---")
+    assert prompt.index("--- small.tex ---") < prompt.index("--- empty.tex ---")
+
+
+@pytest.mark.parametrize("limit", [0, 1, 20, 50, 51, 52, 53, 54, 55, 60])
+def test_middle_compaction_respects_tiny_content_budgets(limit: int) -> None:
+    assert len(_truncate_middle("x" * 1000, limit, "attachment.tex")) <= limit
+
+
+def test_assistant_rejects_unsafe_attachment_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect this"}],
+                "context": {},
+                "attached_paths": ["../secret.tex"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Path must be relative and remain inside the project"
+    )
+    assert provider.context is None
+
+
+def test_assistant_rejects_oversized_attachment_before_provider_call(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text("manuscript", encoding="utf-8")
+    (tmp_path / "large.txt").write_bytes(b"x" * (1024 * 1024 + 1))
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=tmp_path, AI_PROVIDER="disabled")
+
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect this"}],
+                "context": {},
+                "attached_paths": ["main.tex", "large.txt"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "large.txt" in response.json()["detail"]
+    assert "1,048,576-byte limit" in response.json()["detail"]
+    assert provider.context is None
+
+
+def test_assistant_accepts_and_deduplicates_exact_byte_limit_attachment(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from cloverleaf.workspace import Workspace
+
+    (tmp_path / "main.tex").write_text("manuscript", encoding="utf-8")
+    content = "🙂" * (1024 * 1024 // 4)
+    (tmp_path / "boundary.txt").write_text(content, encoding="utf-8")
+    original_read = Workspace.read_versioned
+    reads = []
+
+    def tracked_read(workspace, path, **kwargs):
+        if path == "boundary.txt":
+            reads.append(kwargs.get("max_bytes"))
+        return original_read(workspace, path, **kwargs)
+
+    monkeypatch.setattr(Workspace, "read_versioned", tracked_read)
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=tmp_path, AI_PROVIDER="disabled")
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect this"}],
+                "context": {},
+                "attached_paths": ["boundary.txt", "boundary.txt"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert provider.context is not None
+    assert len(provider.context.attached_files) == 1
+    attachment = provider.context.attached_files[0]
+    assert attachment.content == content
+    assert attachment.version == original_read(Workspace(tmp_path), "boundary.txt")[1]
+    assert reads == [1024 * 1024]
+
+
+@pytest.mark.parametrize(
+    "attachment_path", [".git/config", "nested/.git/config", "../secret.tex"]
+)
+def test_attachment_errors_release_registered_turn_and_project_lock(
+    tmp_path: Path, attachment_path: str,
+) -> None:
+    (tmp_path / "main.tex").write_text("manuscript", encoding="utf-8")
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=tmp_path, AI_PROVIDER="disabled")
+    request_id = "12345678-1234-1234-1234-123456789abc"
+    with TestClient(create_app(settings, provider)) as client:
+        body = {
+            "messages": [{"role": "user", "content": "Inspect the attachments"}],
+            "context": {},
+            "request_id": request_id,
+            "attached_paths": [attachment_path],
+        }
+        response = client.post("/api/assistant/chat", json=body)
+        assert response.status_code == 400
+        assert provider.context is None
+        assert client.app.state.assistant_tasks == {}
+        assert not client.app.state.project_lock.locked()
+        body["attached_paths"] = ["main.tex"]
+        response = client.post("/api/assistant/chat", json=body)
+        assert response.status_code == 200
+        assert provider.context.attached_files[0].content == "manuscript"
+
+
+def test_only_requested_attachments_are_read_from_current_project(tmp_path: Path) -> None:
+    projects = [tmp_path / "first", tmp_path / "second"]
+    for index, project in enumerate(projects):
+        (project / ".codex/skills/test").mkdir(parents=True)
+        (project / "main.tex").write_text("manuscript", encoding="utf-8")
+        (project / ".codex/skills/test/SKILL.md").write_text(
+            f"Project {index} skill", encoding="utf-8"
+        )
+        (project / ".env").write_text("DO_NOT_ATTACH=private", encoding="utf-8")
+    provider = CapturingProvider()
+    settings = Settings(
+        CLOVERLEAF_WORKSPACE=projects[0],
+        CLOVERLEAF_PROJECT_STATE=str(tmp_path / "state.json"),
+        AI_PROVIDER="disabled",
+    )
+    body = {
+        "messages": [{"role": "user", "content": "Inspect the attachments"}],
+        "context": {"attached_files": [{"path": ".env", "content": "forged"}]},
+        "attached_paths": [".codex/skills/test/SKILL.md"],
+    }
+    with TestClient(create_app(settings, provider)) as client:
+        assert client.post("/api/assistant/chat", json=body).status_code == 200
+        assert len(provider.context.attached_files) == 1
+        assert provider.context.attached_files[0].content == "Project 0 skill"
+        loaded = client.post(
+            "/api/project/load",
+            json={"workspace": str(projects[1]), "main_file": "main.tex"},
+        )
+        assert loaded.status_code == 200
+        assert client.post("/api/assistant/chat", json=body).status_code == 200
+        assert len(provider.context.attached_files) == 1
+        assert provider.context.attached_files[0].content == "Project 1 skill"
+        body["attached_paths"] = []
+        assert client.post("/api/assistant/chat", json=body).status_code == 200
+        assert provider.context.attached_files == []
+
+
+def test_attachment_count_is_validated_before_provider_call(tmp_path: Path) -> None:
+    (tmp_path / "main.tex").write_text("manuscript", encoding="utf-8")
+    provider = CapturingProvider()
+    settings = Settings(CLOVERLEAF_WORKSPACE=tmp_path, AI_PROVIDER="disabled")
+    with TestClient(create_app(settings, provider)) as client:
+        response = client.post(
+            "/api/assistant/chat",
+            json={
+                "messages": [{"role": "user", "content": "Inspect the attachments"}],
+                "context": {},
+                "attached_paths": ["main.tex"] * 21,
+            },
+        )
+    assert response.status_code == 422
+    assert provider.context is None
