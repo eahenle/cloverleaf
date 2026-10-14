@@ -41,6 +41,7 @@ from .workspace import FileChangedError, Workspace, WorkspaceError
 
 logger = logging.getLogger(__name__)
 ASSISTANT_HEARTBEAT_SECONDS = 3
+ASSISTANT_ATTACHMENT_MAX_BYTES = 1024 * 1024
 
 DEFAULT_MAIN_TEX = """\\documentclass{article}
 \\title{Untitled manuscript}
@@ -546,7 +547,7 @@ def create_app(
                     seen_attachments.add(attachment_path)
                     try:
                         content, version = application.state.workspace.read_versioned(
-                            attachment_path
+                            attachment_path, max_bytes=ASSISTANT_ATTACHMENT_MAX_BYTES
                         )
                     except Exception as exc:
                         raise translate_error(exc) from exc
