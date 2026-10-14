@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Send, Square, X } from 'lucide-react'
+import { Check, Paperclip, Send, Square, X } from 'lucide-react'
 import type { AssistantProgress, ChatMessage, ProposedEdit } from '../types'
 import { ServerTerminal } from './ServerTerminal'
 import { SystemStatus } from './SystemStatus'
@@ -12,7 +12,8 @@ type Props = {
   dismissedEditKeys: Set<string>
   queuedMessages: string[]
   progress: AssistantProgress | null
-  onSend: (message: string) => void
+  availableFiles: string[]
+  onSend: (message: string, attachedFiles: string[]) => void
   onCancel: () => void
   onResolveEdits: (editKeys: string[]) => void
   onApplyEdits: (edits: ProposedEdit[]) => Promise<boolean>
@@ -26,12 +27,14 @@ export function Assistant({
   dismissedEditKeys,
   queuedMessages,
   progress,
+  availableFiles,
   onSend,
   onCancel,
   onResolveEdits,
   onApplyEdits,
 }: Props) {
   const [draft, setDraft] = useState('')
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState<'codex' | 'terminal' | 'status'>('codex')
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
   const [historyDraft, setHistoryDraft] = useState('')
@@ -45,6 +48,14 @@ export function Assistant({
     ],
     [messages, queuedMessages],
   )
+
+  useEffect(() => {
+    setAttachedFiles((current) => {
+      const available = new Set(availableFiles)
+      const next = current.filter((file) => available.has(file))
+      return next.length === current.length ? current : next
+    })
+  }, [availableFiles])
 
   useEffect(() => {
     const messageList = messageListRef.current
@@ -66,7 +77,8 @@ export function Assistant({
     setDraft('')
     setHistoryIndex(null)
     setHistoryDraft('')
-    onSend(message)
+    onSend(message, attachedFiles)
+    setAttachedFiles([])
   }
 
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -270,6 +282,42 @@ export function Assistant({
             ))}
           </div>
           <form className="chat-input" onSubmit={submit}>
+            {attachedFiles.length > 0 && (
+              <div className="assistant-attachments" aria-label="Attached files">
+                {attachedFiles.map((file) => (
+                  <span key={file}>
+                    {file}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${file}`}
+                      onClick={() => setAttachedFiles((current) => current.filter((item) => item !== file))}
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <label className="attach-picker" title="Attach a project file">
+              <Paperclip size={14} aria-hidden="true" />
+              <span className="sr-only">Attach a project file</span>
+              <select
+                aria-label="Attach a project file"
+                value=""
+                disabled={cancelling || attachedFiles.length >= 20}
+                onChange={(event) => {
+                  const file = event.target.value
+                  if (file) {
+                    setAttachedFiles((current) => current.includes(file) ? current : [...current, file])
+                  }
+                }}
+              >
+                <option value="">Attach file…</option>
+                {availableFiles.filter((file) => !attachedFiles.includes(file)).map((file) => (
+                  <option key={file} value={file}>{file}</option>
+                ))}
+              </select>
+            </label>
             <textarea
               ref={inputRef}
               value={draft}
