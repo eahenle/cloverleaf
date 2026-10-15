@@ -187,7 +187,7 @@ def build_codex_prompt(
     return prompt
 
 
-def _codex_failure_message(exc: Exception) -> str:
+def _codex_failure_message(exc: Exception, codex_bin: str | None = None) -> str:
     detail = str(exc).lower()
     if "maximum length" in detail or "too large" in detail:
         return (
@@ -196,8 +196,15 @@ def _codex_failure_message(exc: Exception) -> str:
         )
     if "timed out" in detail or "timeout" in detail:
         return "Codex timed out while answering. Try again shortly."
-    if any(term in detail for term in ("unauthorized", "authentication", "not logged in")):
-        return "Codex authentication is unavailable. Run `codex login` and try again."
+    if any(term in detail for term in (
+        "unauthorized", "authentication", "not logged in", "refresh token", "refresh_token",
+    )):
+        executable = codex_bin or "codex"
+        return (
+            "Codex authentication is unavailable for Cloverleaf's configured runtime. "
+            f"On the server, run `{executable} login` and verify with "
+            f"`{executable} login status`, then try again."
+        )
     if isinstance(exc, FileNotFoundError):
         return "The Codex executable could not be started. Run `make install` and try again."
     return "Codex could not answer. Check the backend log for details and try again."
@@ -269,7 +276,7 @@ class CodexProvider(AssistantProvider):
                     raise
         except Exception as exc:
             logger.warning("Codex request failed (%s): %s", type(exc).__name__, exc)
-            raise AssistantUnavailable(_codex_failure_message(exc)) from exc
+            raise AssistantUnavailable(_codex_failure_message(exc, self.codex_bin)) from exc
         return parse_response(final_response)
 
     def for_workspace(self, workspace: Path) -> CodexProvider:

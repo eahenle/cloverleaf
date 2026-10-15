@@ -17,6 +17,7 @@ from cloverleaf.assistant import (
     CodexProvider,
     OpenAICompatibleProvider,
     _consume_codex_turn,
+    _codex_failure_message,
     build_codex_prompt,
     codex_event_progress,
     parse_response,
@@ -30,6 +31,22 @@ from cloverleaf.models import (
     CompileStatus,
     Diagnostic,
 )
+
+
+@pytest.mark.parametrize("detail", [
+    "401 Unauthorized: Missing bearer or basic authentication in header",
+    "Your refresh token has already been used",
+    "refresh_token_reused",
+])
+def test_auth_failure_points_to_configured_profile(detail: str) -> None:
+    message = _codex_failure_message(RuntimeError(detail), "scripts/codex-personal")
+    assert "`scripts/codex-personal login`" in message
+    assert "`scripts/codex-personal login status`" in message
+    assert "`codex login`" not in message
+
+
+def test_default_auth_failure_uses_default_cli() -> None:
+    assert "`codex login`" in _codex_failure_message(RuntimeError("Not logged in"))
 
 
 def test_parse_proposed_edits() -> None:
