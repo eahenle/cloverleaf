@@ -20,7 +20,7 @@ backend:
 	uv run uvicorn cloverleaf.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 
 backend-test:
-	CLOVERLEAF_PROJECT_STATE=$(CURDIR)/.cloverleaf-project.json.test uv run uvicorn cloverleaf.main:app --app-dir backend --host 127.0.0.1 --port 8010
+	uv run python scripts/test_backend.py
 
 frontend:
 	npm --prefix frontend run dev -- --host 127.0.0.1

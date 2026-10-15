@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     ai_api_key: str = Field(default="", validation_alias="AI_API_KEY")
     codex_bin: str = Field(default="", validation_alias="CLOVERLEAF_CODEX_BIN")
     project_state_file: str = Field(default="", validation_alias="CLOVERLEAF_PROJECT_STATE")
+    projects_remote: str = Field(default="", validation_alias="CLOVERLEAF_PROJECTS_REMOTE")
+    projects_sync_dir: str = Field(default="", validation_alias="CLOVERLEAF_PROJECTS_SYNC_DIR")
+    projects_sync_interval: float = Field(default=30, ge=1, validation_alias="CLOVERLEAF_PROJECTS_SYNC_INTERVAL")
     runtime_log_file: str = Field(default="", validation_alias="CLOVERLEAF_RUNTIME_LOG")
     runtime_shutdown_file: str = Field(
         default="", validation_alias="CLOVERLEAF_RUNTIME_SHUTDOWN"
@@ -41,6 +44,10 @@ class Settings(BaseSettings):
     @property
     def runtime_log_path(self) -> Path | None:
         return self._optional_path(self.runtime_log_file)
+
+    @property
+    def projects_sync_path(self) -> Path:
+        return self._optional_path(self.projects_sync_dir) or self.project_state_path.parent / ".cloverleaf-runtime" / "projects-sync"
 
     @property
     def runtime_shutdown_path(self) -> Path | None:

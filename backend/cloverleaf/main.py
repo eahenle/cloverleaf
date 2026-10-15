@@ -44,6 +44,7 @@ from .models import (
     SelectCompilationRoot,
 )
 from .version_control import LocalGitRepository
+from .project_sync import ProjectSync
 from .workspace import FileChangedError, Workspace, WorkspaceBoundaryError, WorkspaceError
 
 
@@ -170,12 +171,21 @@ def create_app(
         app.state.main_file = initial_main_file
         app.state.project_state_path = settings.project_state_path
         app.state.project_lock = asyncio.Lock()
+        app.state.project_sync = ProjectSync(
+            settings.projects_remote, settings.projects_sync_path,
+            settings.workspace.parent, settings.projects_sync_interval,
+        )
+        await asyncio.to_thread(app.state.project_sync.register, initial_workspace)
+        sync_task = asyncio.create_task(app.state.project_sync.run()) if settings.projects_remote else None
         app.state.assistant_progress = {}
         app.state.assistant_tasks = {}
         app.state.assistant_cancel_requests = set()
         try:
             yield
         finally:
+            app.state.project_sync.stop()
+            if sync_task:
+                await sync_task
             tasks = list(app.state.assistant_tasks.values())
             for task in tasks:
                 task.cancel()
@@ -193,6 +203,12 @@ def create_app(
 
     def workspace() -> Workspace:
         return application.state.workspace
+
+    async def register_project_sync(root: Path) -> None:
+        try:
+            await asyncio.to_thread(application.state.project_sync.register, root)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def checkpoint(fs: Workspace, paths: list[str], message: str) -> None:
         repository = application.state.repository
@@ -281,6 +297,16 @@ def create_app(
             {"id": "assistant", "name": "Codex provider", "condition": assistant_condition, "detail": assistant_detail},
             {"id": "launcher", "name": "Managed launcher", "condition": launcher_condition, "detail": launcher_detail},
         ]
+        sync_status = application.state.project_sync.status()
+        if sync_status["enabled"]:
+            services.append({
+                "id": "sync", "name": "GitHub project sync",
+                "condition": "degraded" if sync_status["last_error"] or not sync_status["last_synced"] else "healthy",
+                "detail": sync_status["last_error"] or (
+                    f"{len(sync_status['projects'])} projects · last synced {sync_status['last_synced']}"
+                    if sync_status["last_synced"] else "Initial project sync in progress"
+                ),
+            })
         overall = "healthy" if all(item["condition"] == "healthy" for item in services) else "degraded"
         return {
             "overall": overall,
@@ -419,6 +445,10 @@ def create_app(
     async def get_project_repository():
         return RepositoryInfo.model_validate(application.state.repository.status(), from_attributes=True)
 
+    @application.get("/api/projects/sync")
+    async def get_projects_sync():
+        return application.state.project_sync.status()
+
     @application.post("/api/project/compilation-root", response_model=ProjectInfo)
     async def select_compilation_root(body: SelectCompilationRoot):
         async with application.state.project_lock:
@@ -554,6 +584,7 @@ def create_app(
                 next_workspace.create("main.tex", "file", DEFAULT_MAIN_TEX)
             elif create_main and not main_path.is_file():
                 raise HTTPException(status_code=400, detail="Compilation root must be a file")
+            await register_project_sync(candidate)
             try:
                 persist_project(application.state.project_state_path, candidate, main_file)
             except OSError as exc:
@@ -628,6 +659,7 @@ def create_app(
                 next_workspace = Workspace(candidate)
                 next_workspace.create("main.tex", "file", DEFAULT_MAIN_TEX)
                 created_main = True
+                await register_project_sync(candidate)
                 persist_project(application.state.project_state_path, candidate, "main.tex")
             except HTTPException:
                 if created_main:

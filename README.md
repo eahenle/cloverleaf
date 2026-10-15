@@ -36,7 +36,9 @@ While Cloverleaf is running, use **Load project** (the open-folder button in the
 
 Use **New project** (the book-plus button) to initialize a fresh `main.tex`. The same folder browser can use the selected directory as the project root or create one visible child directory before activating the new project. Cloverleaf never overwrites an existing `main.tex`; use **Load project** for an existing manuscript.
 
-Every activated project root is also a local Git repository. Cloverleaf initializes a repository at that exact root when necessary, creates one baseline commit for a new or unborn repository, and checkpoints the precise paths changed by each confirmed Cloverleaf file operation. Existing repositories are not swept or committed when opened, existing ignore rules and unrelated staged changes are preserved, and generated LaTeX artifacts are excluded locally through `.git/info/exclude`. Checkpoints use a repository-local `Cloverleaf <cloverleaf@localhost>` identity and never contact a remote; GitHub synchronization remains future work.
+Every activated project root is also a local Git repository. Cloverleaf initializes a repository at that exact root when necessary, creates one baseline commit for a new or unborn repository, and checkpoints the precise paths changed by each confirmed Cloverleaf file operation. Existing repositories are not swept or committed when opened, existing ignore rules and unrelated staged changes are preserved, and generated LaTeX artifacts are excluded locally through `.git/info/exclude`. Checkpoints use a repository-local `Cloverleaf <cloverleaf@localhost>` identity.
+
+Set `CLOVERLEAF_PROJECTS_REMOTE` to enable automatic GitHub synchronization for all projects. Cloverleaf stores each project under `projects/<name>/` in the shared repository and syncs every 30 seconds while running, including inactive projects and external file edits. Projects created or loaded later join automatically. Cloud edits return locally; conflicting edits pause syncing and appear in the Status tab. Credentials, build artifacts, and local conversation state stay local. See [project sync](docs/project-sync.md) for configuration and conflict recovery.
 
 Project folders start collapsed so large research repositories remain fast and scannable. Cloverleaf watches the open file over one WebSocket connection: clean external edits reload automatically, while a conflicting external edit pauses autosave and preserves the unsaved editor text for review.
 
@@ -111,7 +113,7 @@ make clean            # remove LaTeX build artifacts
 
 FastAPI exposes interactive API documentation at <http://127.0.0.1:8000/docs> while the backend is running.
 
-The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It starts isolated, non-reused test servers on ports 8010 and 5183 so it cannot change or stop an interactive development session. Those direct test servers deliberately report the Terminal tab as unmanaged and disable its shutdown button. The suite serializes tests because cases intentionally edit the same local manuscript, restores fixture content after destructive cases, and captures ignored visual-validation screenshots under `screenshots/`.
+The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It starts isolated, non-reused test servers on ports 8010 and 5183 with a temporary copy of the example manuscript and project sync disabled, so it cannot change, publish test edits from, or stop an interactive development session. Those direct test servers deliberately report the Terminal tab as unmanaged and disable its shutdown button. The suite serializes tests because cases intentionally edit the same test manuscript, restores fixture content after destructive cases, and captures ignored visual-validation screenshots under `screenshots/`.
 
 ## Repository layout
 
