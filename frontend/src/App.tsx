@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { api } from './api'
 import { Assistant } from './components/Assistant'
@@ -17,6 +17,11 @@ const initialStatus: CompileStatus = {
 }
 
 type EditIntent = { id: number; path: string }
+type AssistantTurn = { message: string; attachedPaths: string[] }
+
+function treeFiles(nodes: TreeNode[]): string[] {
+  return nodes.flatMap((node) => node.type === 'file' ? [node.path] : treeFiles(node.children))
+}
 
 function pendingReviewMessageIndex(
   messages: ChatMessage[],
@@ -44,7 +49,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [assistantBusy, setAssistantBusy] = useState(false)
   const [assistantCancelling, setAssistantCancelling] = useState(false)
-  const [assistantQueue, setAssistantQueue] = useState<string[]>([])
+  const [assistantQueue, setAssistantQueue] = useState<AssistantTurn[]>([])
   const [assistantReviewMessageIndex, setAssistantReviewMessageIndex] = useState<number | null>(null)
   const [dismissedEditKeys, setDismissedEditKeys] = useState<Set<string>>(new Set())
   const [assistantProgress, setAssistantProgress] = useState<AssistantProgress | null>(null)
@@ -52,6 +57,8 @@ export default function App() {
   const [compilationRootBusy, setCompilationRootBusy] = useState(false)
   const [projectPickerMode, setProjectPickerMode] = useState<'load' | 'new' | null>(null)
   const [toast, setToast] = useState('')
+  const availableFiles = useMemo(() => treeFiles(tree), [tree])
+  const queuedMessages = useMemo(() => assistantQueue.map((turn) => turn.message), [assistantQueue])
 
   const pathRef = useRef(path)
   const contentRef = useRef(content)
@@ -63,7 +70,7 @@ export default function App() {
   const saveCountRef = useRef(0)
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const messagesRef = useRef<ChatMessage[]>([])
-  const assistantQueueRef = useRef<string[]>([])
+  const assistantQueueRef = useRef<AssistantTurn[]>([])
   const assistantReviewMessageIndexRef = useRef<number | null>(null)
   const dismissedEditKeysRef = useRef<Set<string>>(new Set())
   const historyWorkspaceRef = useRef<string | null>(null)
@@ -89,7 +96,7 @@ export default function App() {
     setMessages(nextMessages)
   }, [])
 
-  const replaceAssistantQueue = useCallback((nextQueue: string[]) => {
+  const replaceAssistantQueue = useCallback((nextQueue: AssistantTurn[]) => {
     assistantQueueRef.current = nextQueue
     setAssistantQueue(nextQueue)
   }, [])
@@ -440,17 +447,17 @@ export default function App() {
     })().catch(showError)
   }
 
-  const runAssistantRounds = useCallback(async (firstMessage: string) => {
+  const runAssistantRounds = useCallback(async (firstTurn: AssistantTurn) => {
     assistantRunningRef.current = true
     assistantCancelRequestedRef.current = false
     assistantCancelledQueueCountRef.current = 0
     setAssistantBusy(true)
-    let message: string | undefined = firstMessage
+    let turn: AssistantTurn | undefined = firstTurn
     try {
-      while (message !== undefined) {
+      while (turn !== undefined) {
         const next: ChatMessage[] = [
           ...messagesRef.current,
-          { role: 'user', content: message },
+          { role: 'user', content: turn.message },
         ]
         replaceMessages(next)
         const startedAt = Date.now()
@@ -476,7 +483,7 @@ export default function App() {
             diagnostics: activeStatus.diagnostics,
             compile_state: activeStatus.state,
             compile_log: activeStatus.log_tail,
-          }, startedAt, setAssistantProgress, requestId, controller.signal)
+          }, startedAt, setAssistantProgress, requestId, controller.signal, turn.attachedPaths)
           if (assistantCancelRequestedRef.current) {
             const cleared = assistantCancelledQueueCountRef.current
             replaceMessages([...next, {
@@ -517,9 +524,9 @@ export default function App() {
 
         if (assistantCancelRequestedRef.current) break
         if (assistantReviewMessageIndexRef.current !== null) break
-        const [queuedMessage, ...remainingQueue] = assistantQueueRef.current
+        const [queuedTurn, ...remainingQueue] = assistantQueueRef.current
         replaceAssistantQueue(remainingQueue)
-        message = queuedMessage
+        turn = queuedTurn
       }
     } finally {
       assistantRunningRef.current = false
@@ -545,13 +552,14 @@ export default function App() {
     window.setTimeout(() => active.controller.abort(), 750)
   }, [replaceAssistantQueue])
 
-  const sendMessage = useCallback((message: string) => {
+  const sendMessage = useCallback((message: string, attachedPaths: string[] = []) => {
     if (assistantCancelRequestedRef.current) return
+    const turn = { message, attachedPaths: [...attachedPaths] }
     if (assistantRunningRef.current || assistantReviewMessageIndexRef.current !== null) {
-      replaceAssistantQueue([...assistantQueueRef.current, message])
+      replaceAssistantQueue([...assistantQueueRef.current, turn])
       return
     }
-    void runAssistantRounds(message)
+    void runAssistantRounds(turn)
   }, [replaceAssistantQueue, runAssistantRounds])
 
   const resolveAssistantEdits = useCallback((editKeys: string[]) => {
@@ -566,10 +574,10 @@ export default function App() {
         window.setTimeout(startNextRound, 0)
         return
       }
-      const [queuedMessage, ...remainingQueue] = assistantQueueRef.current
-      if (queuedMessage === undefined) return
+      const [queuedTurn, ...remainingQueue] = assistantQueueRef.current
+      if (queuedTurn === undefined) return
       replaceAssistantQueue(remainingQueue)
-      void runAssistantRounds(queuedMessage)
+      void runAssistantRounds(queuedTurn)
     }
     window.setTimeout(startNextRound, 0)
   }, [replaceAssistantQueue, replaceAssistantReview, replaceDismissedEditKeys, runAssistantRounds])
@@ -678,13 +686,15 @@ export default function App() {
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize preview and assistant panels" />
             <Panel defaultSize={41} minSize={24}>
               <Assistant
+                key={project?.workspace ?? 'no-project'}
                 messages={messages}
                 busy={assistantBusy}
                 cancelling={assistantCancelling}
                 reviewMessageIndex={assistantReviewMessageIndex}
                 dismissedEditKeys={dismissedEditKeys}
-                queuedMessages={assistantQueue}
+                queuedMessages={queuedMessages}
                 progress={assistantProgress}
+                availableFiles={availableFiles}
                 onSend={sendMessage}
                 onCancel={cancelAssistant}
                 onResolveEdits={resolveAssistantEdits}
