@@ -116,6 +116,15 @@ make clean            # remove LaTeX build artifacts
 
 FastAPI exposes interactive API documentation at <http://127.0.0.1:8000/docs> while the backend is running.
 
+GitHub Actions runs `./dev-and-run --check-only` on pull requests and pushes to
+`main`. The Linux runner installs Python 3.12, Node.js 22, locked Python/npm
+dependencies, TeX Live (including an explicitly generated `pdflatex.fmt`), and
+Playwright Chromium with its system dependencies. It uses the same isolated test
+servers described below. The authenticated live Codex test stays disabled; no
+provider credentials are supplied. Logs, Playwright failure traces, and
+screenshots are retained as workflow artifacts for seven days. After the workflow
+lands on `main`, it can also be run manually with **Run workflow**.
+
 The browser suite uses the real local backend, `latexmk`, PDF.js, and Chromium at 1440×900. It starts isolated, non-reused test servers on ports 8010 and 5183 with a temporary copy of the example manuscript and project sync disabled, so it cannot change, publish test edits from, or stop an interactive development session. Those direct test servers deliberately report the Terminal tab as unmanaged and disable its shutdown button. The suite serializes tests because cases intentionally edit the same test manuscript, restores fixture content after destructive cases, and captures ignored visual-validation screenshots under `screenshots/`.
 
 ## Repository layout
