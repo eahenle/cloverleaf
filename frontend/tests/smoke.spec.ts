@@ -104,7 +104,10 @@ test.describe.serial('Cloverleaf authoring workflow', () => {
 
       await editor.press('ControlOrMeta+z')
       await expect(editor).toContainText('Edit this paragraph')
-      await editor.press('ControlOrMeta+Shift+z')
+      const redoShortcut = process.platform === 'darwin'
+        ? 'ControlOrMeta+Shift+z'
+        : 'ControlOrMeta+y'
+      await editor.press(redoShortcut)
       await expect(editor).toContainText('Live browser validation')
 
       await expect(page.locator('.save-state')).toHaveText('saved', { timeout: 10_000 })
