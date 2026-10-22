@@ -66,6 +66,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run the canonical validation gate
+        shell: bash
         run: ./dev-and-run --check-only 2>&1 | tee validation.log
 
       - name: Retain validation diagnostics
