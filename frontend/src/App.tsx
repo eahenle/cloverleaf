@@ -47,6 +47,7 @@ export default function App() {
   const [editIntent, setEditIntent] = useState<EditIntent | null>(null)
   const [status, setStatus] = useState<CompileStatus>(initialStatus)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [assistantResetKey, setAssistantResetKey] = useState(0)
   const [assistantBusy, setAssistantBusy] = useState(false)
   const [assistantCancelling, setAssistantCancelling] = useState(false)
   const [assistantQueue, setAssistantQueue] = useState<AssistantTurn[]>([])
@@ -386,6 +387,7 @@ export default function App() {
       syncedContentRef.current = file.content
       externalWarningVersionRef.current = null
       setProject(loaded)
+      setAssistantResetKey((current) => current + 1)
       setTree(nextTree)
       updatePath(file.path)
       updateContent(file.content)
@@ -686,7 +688,7 @@ export default function App() {
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize preview and assistant panels" />
             <Panel defaultSize={41} minSize={24}>
               <Assistant
-                key={project?.workspace ?? 'no-project'}
+                key={assistantResetKey}
                 messages={messages}
                 busy={assistantBusy}
                 cancelling={assistantCancelling}

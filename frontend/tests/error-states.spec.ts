@@ -115,6 +115,44 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
   })
 })
 
+test('initial project hydration preserves a draft typed before the project loads', async ({ page }) => {
+  let releaseProject!: () => void
+  const projectLoaded = new Promise<void>((resolve) => {
+    releaseProject = resolve
+  })
+  const requests: string[] = []
+
+  await page.route('**/api/project', async (route) => {
+    const response = await route.fetch()
+    await projectLoaded
+    await route.fulfill({ response })
+  })
+  await page.route('**/api/assistant/chat', async (route) => {
+    const body = route.request().postDataJSON() as {
+      messages: Array<{ content: string }>
+    }
+    requests.push(body.messages.at(-1)?.content ?? '')
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'Draft received.', proposed_edits: [] }),
+    })
+  })
+
+  await page.goto('/')
+  const input = page.getByLabel('Message Codex')
+  await input.fill('Draft typed while project loads')
+  await expect(input).toHaveValue('Draft typed while project loads')
+
+  releaseProject()
+
+  await expect(page.locator('.project-path')).toContainText('main.tex')
+  await expect(input).toHaveValue('Draft typed while project loads')
+  await input.press('Enter')
+  await expect.poll(() => requests).toEqual(['Draft typed while project loads'])
+  await expect(page.getByText('Draft received.')).toBeVisible()
+})
+
 test('Codex input recalls and repeats earlier messages with arrow keys', async ({ page }) => {
   const requests: string[] = []
   await page.route('**/api/assistant/chat', (route) => {
