@@ -52,7 +52,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             latexmk texlive-latex-base texlive-latex-recommended texlive-fonts-recommended
           sudo fmtutil-sys --byfmt pdflatex
-          test -s "$(kpsewhich pdflatex.fmt)"
+          test -s "$(kpsewhich --engine=pdftex --format=fmt pdflatex.fmt)"
           pdflatex --version
           latexmk --version
 
