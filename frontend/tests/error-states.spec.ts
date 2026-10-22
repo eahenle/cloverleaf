@@ -591,8 +591,12 @@ test('assistant shows elapsed time and live runtime health', async ({ page }) =>
       heartbeat: true,
     })), 650)
   })
+  let releaseChatResponse!: () => void
+  const chatResponseReady = new Promise<void>((resolve) => {
+    releaseChatResponse = () => resolve()
+  })
   await page.route('**/api/assistant/chat', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 1_400))
+    await chatResponseReady
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -607,7 +611,14 @@ test('assistant shows elapsed time and live runtime health', async ({ page }) =>
   await expect(activity).toContainText('Inspecting project files')
   await expect(activity).toContainText('stream live')
   await expect(activity).toContainText('4 runtime updates')
-  await expect(activity).toContainText(/1s elapsed/)
+  try {
+    await expect.poll(async () => {
+      const match = (await activity.textContent())?.match(/(\d+)s elapsed/)
+      return match ? Number(match[1]) : -1
+    }).toBeGreaterThan(0)
+  } finally {
+    releaseChatResponse()
+  }
   await expect(page.locator('.message.assistant').last()).toContainText('Finished after inspection.')
 })
 
