@@ -92,6 +92,7 @@ test('assistant keeps the newest response and edit controls in view', async ({ p
   })
 
   await page.goto('/')
+  await expect(page.locator('.project-path')).toContainText('main.tex')
   await page.getByLabel('Message Codex').fill('Explain this and suggest an edit')
   await page.getByLabel('Send message').click()
   await expect(page.getByRole('button', { name: 'Apply' })).toBeInViewport()
