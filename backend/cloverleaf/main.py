@@ -50,6 +50,7 @@ from .workspace import FileChangedError, Workspace, WorkspaceBoundaryError, Work
 
 logger = logging.getLogger(__name__)
 ASSISTANT_HEARTBEAT_SECONDS = 3
+ASSISTANT_ATTACHMENT_MAX_BYTES = 1024 * 1024
 
 DEFAULT_MAIN_TEX = """\\documentclass{article}
 \\title{Untitled manuscript}
@@ -939,12 +940,28 @@ def create_app(
                         assistant = assistant.for_workspace(active_workspace)
                         application.state.assistant = assistant
                 compile_status = application.state.compiler.status.model_copy(deep=True)
+                attached_files = []
+                seen_attachments: set[str] = set()
+                for attachment_path in body.attached_paths:
+                    if attachment_path in seen_attachments:
+                        continue
+                    seen_attachments.add(attachment_path)
+                    try:
+                        content, version = application.state.workspace.read_versioned(
+                            attachment_path, max_bytes=ASSISTANT_ATTACHMENT_MAX_BYTES
+                        )
+                    except Exception as exc:
+                        raise translate_error(exc) from exc
+                    attached_files.append(
+                        FileContent(path=attachment_path, content=content, version=version)
+                    )
                 context = body.context.model_copy(
                     update={
                         "main_file": application.state.main_file,
                         "compile_state": compile_status.state,
                         "diagnostics": compile_status.diagnostics,
                         "compile_log": compile_status.log_tail,
+                        "attached_files": attached_files,
                     }
                 )
                 if progress is not None:
@@ -954,6 +971,8 @@ def create_app(
                 else:
                     response = await assistant.chat(body.messages, context)
                 return prepare_assistant_edits(response, application.state.workspace)
+        except HTTPException:
+            raise
         except AssistantUnavailable as exc:
             logger.warning("Assistant unavailable: %s", exc)
             raise HTTPException(status_code=503, detail=str(exc)) from exc

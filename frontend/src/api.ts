@@ -40,6 +40,7 @@ async function progressChat(
   onProgress: (progress: AssistantProgress) => void,
   requestId: string,
   signal: AbortSignal,
+  attachedPaths: string[],
 ): Promise<AssistantResponse> {
   if (signal.aborted) throw new DOMException('Codex turn cancelled', 'AbortError')
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -93,6 +94,7 @@ async function progressChat(
       body: JSON.stringify({
         messages: messages.map(({ role, content }) => ({ role, content })),
         context,
+        attached_paths: attachedPaths,
         request_id: requestId,
       }),
       signal,
@@ -248,7 +250,8 @@ export const api = {
     onProgress: (progress: AssistantProgress) => void,
     requestId: string,
     signal: AbortSignal,
-  ) => progressChat(messages, context, startedAt, onProgress, requestId, signal),
+    attachedPaths: string[],
+  ) => progressChat(messages, context, startedAt, onProgress, requestId, signal, attachedPaths),
   cancelAssistant: (requestId: string) =>
     request<{ ok: boolean; message: string }>(`/api/assistant/cancel/${requestId}`, {
       method: 'POST',

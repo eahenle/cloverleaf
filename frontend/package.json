@@ -8,7 +8,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:unit": "playwright test --config tests/unit.config.ts"
   },
   "dependencies": {
     "@codemirror/language": "^6.10.8",
