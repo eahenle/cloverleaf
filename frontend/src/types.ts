@@ -63,11 +63,14 @@ export type ProjectAssistantHistory = {
   dismissed_edit_keys: string[]
 }
 
+export type SelectedLine = { path: string; line: number; text: string }
+
 export type AssistantContext = {
   main_file: string | null
   open_file: string | null
   open_file_content: string
   selected_text: string | null
+  selected_line?: SelectedLine | null
   diagnostics: Diagnostic[]
   compile_state: CompileStatus['state']
   compile_log: string

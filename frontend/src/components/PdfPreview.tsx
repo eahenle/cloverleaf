@@ -11,24 +11,38 @@ import type { CompileStatus } from '../types'
 
 GlobalWorkerOptions.workerSrc = workerSource
 
+type PdfDestination = string | unknown[]
+type PdfLink = {
+  id: string
+  url?: string
+  destination?: PdfDestination
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 type PdfPageProps = {
   document: PDFDocumentProxy
   pageNumber: number
   width: number
+  onNavigate: (destination: PdfDestination) => void
   onRendered: () => void
   onError: (message: string) => void
 }
 
-function PdfPage({ document, pageNumber, width, onRendered, onError }: PdfPageProps) {
+function PdfPage({ document, pageNumber, width, onNavigate, onRendered, onError }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [links, setLinks] = useState<PdfLink[]>([])
 
   useEffect(() => {
     let cancelled = false
     let renderTask: RenderTask | null = null
+    setLinks([])
 
     void document
       .getPage(pageNumber)
-      .then((page) => {
+      .then(async (page) => {
         if (cancelled || !canvasRef.current) return
         const base = page.getViewport({ scale: 1 })
         const viewport = page.getViewport({ scale: width / base.width })
@@ -45,7 +59,26 @@ function PdfPage({ document, pageNumber, width, onRendered, onError }: PdfPagePr
           viewport,
           transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
         })
-        return renderTask.promise
+        const [, annotations] = await Promise.all([renderTask.promise, page.getAnnotations({ intent: 'display' })])
+        if (cancelled) return
+        const nextLinks: PdfLink[] = []
+        for (const annotation of annotations) {
+          if (annotation.subtype !== 'Link' || !Array.isArray(annotation.rect)) continue
+          const url = typeof annotation.url === 'string' && /^(https?:|mailto:|tel:)/i.test(annotation.url)
+            ? annotation.url : undefined
+          const destination = typeof annotation.dest === 'string' || Array.isArray(annotation.dest)
+            ? annotation.dest as PdfDestination : undefined
+          if (!url && !destination) continue
+          const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(annotation.rect)
+          nextLinks.push({
+            id: annotation.id, url, destination,
+            left: Math.min(x1, x2) / viewport.width * 100,
+            top: Math.min(y1, y2) / viewport.height * 100,
+            width: Math.abs(x2 - x1) / viewport.width * 100,
+            height: Math.abs(y2 - y1) / viewport.height * 100,
+          })
+        }
+        setLinks(nextLinks)
       })
       .then(() => {
         if (!cancelled) onRendered()
@@ -62,7 +95,29 @@ function PdfPage({ document, pageNumber, width, onRendered, onError }: PdfPagePr
     }
   }, [document, onError, onRendered, pageNumber, width])
 
-  return <canvas ref={canvasRef} className="pdf-page" data-testid="pdf-page" aria-label={`PDF page ${pageNumber}`} />
+  return (
+    <div className="pdf-page-container" data-page-number={pageNumber}>
+      <canvas ref={canvasRef} className="pdf-page" data-testid="pdf-page" aria-label={`PDF page ${pageNumber}`} />
+      {links.map(link => (
+        <a
+          key={link.id}
+          className="pdf-link"
+          href={link.url ?? '#pdf-destination'}
+          target={link.url ? '_blank' : undefined}
+          rel={link.url ? 'noopener noreferrer' : undefined}
+          aria-label={link.url ?? 'Go to document destination'}
+          title={link.url ?? 'Go to document destination'}
+          style={{ left: `${link.left}%`, top: `${link.top}%`, width: `${link.width}%`, height: `${link.height}%` }}
+          onClick={event => {
+            if (!link.url && link.destination) {
+              event.preventDefault()
+              onNavigate(link.destination)
+            }
+          }}
+        />
+      ))}
+    </div>
+  )
 }
 
 type WritablePdfFile = {
@@ -202,6 +257,23 @@ export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
     [loaded],
   )
 
+  const navigateToDestination = useCallback((destination: PdfDestination) => {
+    if (!loaded) return
+    void (async () => {
+      const explicit = typeof destination === 'string'
+        ? await loaded.document.getDestination(destination) : destination
+      if (!explicit?.length) return
+      const reference = explicit[0]
+      const pageIndex = typeof reference === 'number'
+        ? reference : await loaded.document.getPageIndex(reference as { num: number; gen: number })
+      const scroll = scrollRef.current
+      const target = scroll?.querySelector<HTMLElement>(`[data-page-number="${pageIndex + 1}"]`)
+      if (scroll && target) {
+        scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 14
+      }
+    })().catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
+  }, [loaded])
+
   const pageNumbers = loaded
     ? Array.from({ length: loaded.document.numPages }, (_, index) => index + 1)
     : []
@@ -275,6 +347,7 @@ export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
                 document={loaded.document}
                 pageNumber={pageNumber}
                 width={width}
+                onNavigate={navigateToDestination}
                 onRendered={() => onPageRendered(pageNumber)}
                 onError={setError}
               />

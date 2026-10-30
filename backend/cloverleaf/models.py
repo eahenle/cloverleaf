@@ -88,11 +88,18 @@ class AssistantMessage(BaseModel):
     content: str
 
 
+class SelectedLine(BaseModel):
+    path: str
+    line: int = Field(ge=1)
+    text: str
+
+
 class AssistantContext(BaseModel):
     main_file: str | None = None
     open_file: str | None = None
     open_file_content: str = ""
     selected_text: str | None = None
+    selected_line: SelectedLine | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     compile_state: Literal["idle", "compiling", "success", "error"] = "idle"
     compile_log: str = ""
