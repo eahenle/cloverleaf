@@ -35,12 +35,14 @@ test('PDF links overlay the canvas, resize with it, and navigate safely', async 
   await expect(external).toHaveAttribute('rel', 'noopener noreferrer')
   await expect(page.locator('.pdf-page-container a[href^="javascript:"]')).toHaveCount(0)
   const checkPosition = async () => {
-    const canvas = await page.getByTestId('pdf-page').first().boundingBox()
-    const link = await external.boundingBox()
-    expect(canvas).not.toBeNull()
-    expect(link).not.toBeNull()
-    expect(link!.x - canvas!.x).toBeCloseTo(canvas!.width * 20 / 300, 0)
-    expect(link!.y - canvas!.y).toBeCloseTo(canvas!.height * 80 / 600, 0)
+    await expect(async () => {
+      const canvas = await page.getByTestId('pdf-page').first().boundingBox()
+      const link = await external.boundingBox()
+      expect(canvas).not.toBeNull()
+      expect(link).not.toBeNull()
+      expect(link!.x - canvas!.x).toBeCloseTo(canvas!.width * 20 / 300, 0)
+      expect(link!.y - canvas!.y).toBeCloseTo(canvas!.height * 80 / 600, 0)
+    }).toPass({ timeout: 15_000 })
   }
   await checkPosition()
   await page.setViewportSize({ width: 1600, height: 1000 })

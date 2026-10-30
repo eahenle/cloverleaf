@@ -82,6 +82,7 @@ export function Assistant({
     setHistoryIndex(null)
     setHistoryDraft('')
     onSend(message, attachedFiles)
+    onClearLineContext()
     setAttachedFiles([])
   }
 
