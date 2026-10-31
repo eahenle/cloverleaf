@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from pathlib import Path
 
 import pytest
@@ -150,3 +151,48 @@ async def test_source_lookup_reports_missing_synctex(tmp_path: Path, monkeypatch
     monkeypatch.setattr("cloverleaf.compiler.find_latexmk", lambda: None)
     with pytest.raises(FileNotFoundError, match="SyncTeX is unavailable"):
         await Compiler(tmp_path, "main.tex").source_location(1, 100, 200)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
+async def test_source_lookup_interruption_kills_and_reaps_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool,
+) -> None:
+    (tmp_path / "main.synctex.gz").touch()
+    compiler = Compiler(tmp_path, "main.tex")
+    create_subprocess = asyncio.create_subprocess_exec
+    wait_for = asyncio.wait_for
+    started = asyncio.Event()
+    processes = []
+
+    async def start_sleeping_process(*_args, **kwargs):
+        process = await create_subprocess(
+            sys.executable, "-c", "import time; time.sleep(60)", **kwargs,
+        )
+        processes.append(process)
+        started.set()
+        return process
+
+    async def immediate_timeout(awaitable, timeout):
+        return await wait_for(awaitable, timeout=0)
+
+    monkeypatch.setattr("cloverleaf.compiler.shutil.which", lambda _name: sys.executable)
+    monkeypatch.setattr("cloverleaf.compiler.asyncio.create_subprocess_exec", start_sleeping_process)
+    if not cancel:
+        monkeypatch.setattr("cloverleaf.compiler.asyncio.wait_for", immediate_timeout)
+
+    lookup = asyncio.create_task(compiler.source_location(1, 100, 200))
+    try:
+        if cancel:
+            await started.wait()
+            lookup.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else asyncio.TimeoutError):
+            await wait_for(lookup, timeout=5)
+        assert len(processes) == 1
+        assert processes[0].returncode is not None
+    finally:
+        # A failed cleanup regression must not leave the child running.
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
