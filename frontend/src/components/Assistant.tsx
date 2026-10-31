@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Paperclip, Send, Square, X } from 'lucide-react'
-import type { AssistantProgress, ChatMessage, ProposedEdit } from '../types'
+import type { AssistantProgress, ChatMessage, ProposedEdit, SelectedLine } from '../types'
 import { ServerTerminal } from './ServerTerminal'
 import { SystemStatus } from './SystemStatus'
 
@@ -13,6 +13,8 @@ type Props = {
   queuedMessages: string[]
   progress: AssistantProgress | null
   availableFiles: string[]
+  selectedLine: SelectedLine | null
+  onClearLineContext: () => void
   onSend: (message: string, attachedFiles: string[]) => void
   onCancel: () => void
   onResolveEdits: (editKeys: string[]) => void
@@ -28,6 +30,8 @@ export function Assistant({
   queuedMessages,
   progress,
   availableFiles,
+  selectedLine,
+  onClearLineContext,
   onSend,
   onCancel,
   onResolveEdits,
@@ -78,6 +82,7 @@ export function Assistant({
     setHistoryIndex(null)
     setHistoryDraft('')
     onSend(message, attachedFiles)
+    onClearLineContext()
     setAttachedFiles([])
   }
 
@@ -282,6 +287,16 @@ export function Assistant({
             ))}
           </div>
           <form className="chat-input" onSubmit={submit}>
+            {selectedLine && (
+              <div className="assistant-attachments" aria-label="Codex line context">
+                <span title={selectedLine.text}>
+                  {selectedLine.path}:{selectedLine.line}
+                  <button type="button" aria-label="Clear line context" onClick={onClearLineContext}>
+                    <X size={11} />
+                  </button>
+                </span>
+              </div>
+            )}
             {attachedFiles.length > 0 && (
               <div className="assistant-attachments" aria-label="Attached files">
                 {attachedFiles.map((file) => (
@@ -298,6 +313,19 @@ export function Assistant({
                 ))}
               </div>
             )}
+            <textarea
+              ref={inputRef}
+              value={draft}
+              onChange={(event) => {
+                setDraft(event.target.value)
+                setHistoryIndex(null)
+                setHistoryDraft('')
+              }}
+              onKeyDown={keyDown}
+              placeholder={cancelling ? 'Waiting for Codex to stop…' : reviewMessageIndex !== null ? 'Queue a message until edits are reviewed…' : busy ? 'Queue a message for the next round…' : 'Ask Codex to edit or inspect…'}
+              aria-label="Message Codex"
+              rows={2}
+            />
             <label className="attach-picker" title="Attach a project file">
               <Paperclip size={14} aria-hidden="true" />
               <span className="sr-only">Attach a project file</span>
@@ -318,19 +346,6 @@ export function Assistant({
                 ))}
               </select>
             </label>
-            <textarea
-              ref={inputRef}
-              value={draft}
-              onChange={(event) => {
-                setDraft(event.target.value)
-                setHistoryIndex(null)
-                setHistoryDraft('')
-              }}
-              onKeyDown={keyDown}
-              placeholder={cancelling ? 'Waiting for Codex to stop…' : reviewMessageIndex !== null ? 'Queue a message until edits are reviewed…' : busy ? 'Queue a message for the next round…' : 'Ask Codex to edit or inspect…'}
-              aria-label="Message Codex"
-              rows={2}
-            />
             <button
               type="submit"
               disabled={cancelling || !draft.trim()}

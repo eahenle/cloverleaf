@@ -7,7 +7,7 @@ import { FileTree } from './components/FileTree'
 import { PdfPreview } from './components/PdfPreview'
 import { ProjectPicker } from './components/ProjectPicker'
 import { ProjectStatus } from './components/ProjectStatus'
-import type { AssistantProgress, ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, TreeNode } from './types'
+import type { AssistantProgress, ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, SelectedLine, TreeNode } from './types'
 
 const initialStatus: CompileStatus = {
   state: 'idle',
@@ -17,7 +17,7 @@ const initialStatus: CompileStatus = {
 }
 
 type EditIntent = { id: number; path: string }
-type AssistantTurn = { message: string; attachedPaths: string[] }
+type AssistantTurn = { message: string; attachedPaths: string[]; selectedLine: SelectedLine | null }
 
 function treeFiles(nodes: TreeNode[]): string[] {
   return nodes.flatMap((node) => node.type === 'file' ? [node.path] : treeFiles(node.children))
@@ -42,6 +42,7 @@ export default function App() {
   const [path, setPath] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [selectedText, setSelectedText] = useState('')
+  const [selectedLine, setSelectedLine] = useState<SelectedLine | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editIntent, setEditIntent] = useState<EditIntent | null>(null)
@@ -220,6 +221,7 @@ export default function App() {
     updateContent(file.content)
     updateDirty(false)
     setSelectedText('')
+    setSelectedLine(null)
   }, [saveCurrent, updateContent, updateDirty, updatePath])
 
   const requestCompile = useCallback(async () => {
@@ -250,6 +252,7 @@ export default function App() {
   }, [saveCurrent, showError])
 
   const editorChanged = useCallback((value: string) => {
+    setSelectedLine(null)
     if (!pathRef.current) return
     updateContent(value)
     updateDirty(true)
@@ -320,6 +323,7 @@ export default function App() {
         externalWarningVersionRef.current = null
         updateContent(file.content)
         setSelectedText('')
+        setSelectedLine(null)
         if (/\.(tex|bib|sty|cls)$/i.test(observedPath)) {
           void requestCompile().catch(showError)
         }
@@ -393,6 +397,7 @@ export default function App() {
       updateContent(file.content)
       updateDirty(false)
       setSelectedText('')
+      setSelectedLine(null)
       replaceAssistantQueue([])
       restoreAssistantHistory(history)
       setAssistantProgress(null)
@@ -444,6 +449,7 @@ export default function App() {
         updateContent('')
         updateDirty(false)
         setSelectedText('')
+        setSelectedLine(null)
       }
       await refreshTree()
     })().catch(showError)
@@ -481,7 +487,8 @@ export default function App() {
             main_file: activeProject?.main_file ?? null,
             open_file: pathRef.current,
             open_file_content: contentRef.current,
-            selected_text: activeSelection || null,
+            selected_text: turn.selectedLine ? turn.selectedLine.text : activeSelection || null,
+            selected_line: turn.selectedLine,
             diagnostics: activeStatus.diagnostics,
             compile_state: activeStatus.state,
             compile_log: activeStatus.log_tail,
@@ -556,13 +563,13 @@ export default function App() {
 
   const sendMessage = useCallback((message: string, attachedPaths: string[] = []) => {
     if (assistantCancelRequestedRef.current) return
-    const turn = { message, attachedPaths: [...attachedPaths] }
+    const turn = { message, attachedPaths: [...attachedPaths], selectedLine }
     if (assistantRunningRef.current || assistantReviewMessageIndexRef.current !== null) {
       replaceAssistantQueue([...assistantQueueRef.current, turn])
       return
     }
     void runAssistantRounds(turn)
-  }, [replaceAssistantQueue, runAssistantRounds])
+  }, [replaceAssistantQueue, runAssistantRounds, selectedLine])
 
   const resolveAssistantEdits = useCallback((editKeys: string[]) => {
     const nextDismissed = new Set(dismissedEditKeysRef.current)
@@ -609,6 +616,7 @@ export default function App() {
       updateContent(saved.content)
       updateDirty(false)
       setSelectedText('')
+      setSelectedLine(null)
       await requestCompile()
       return true
     } catch (reason) {
@@ -670,6 +678,7 @@ export default function App() {
             compilationRootBusy={compilationRootBusy}
             onChange={editorChanged}
             onSelection={setSelectedText}
+            onLineContext={setSelectedLine}
             onSaveAndCompile={saveAndCompile}
             onCompileView={compileOpenView}
           />
@@ -697,6 +706,8 @@ export default function App() {
                 queuedMessages={queuedMessages}
                 progress={assistantProgress}
                 availableFiles={availableFiles}
+                selectedLine={selectedLine}
+                onClearLineContext={() => { setSelectedLine(null); setSelectedText('') }}
                 onSend={sendMessage}
                 onCancel={cancelAssistant}
                 onResolveEdits={resolveAssistantEdits}

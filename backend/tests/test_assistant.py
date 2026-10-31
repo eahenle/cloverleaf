@@ -207,6 +207,15 @@ def test_codex_prompt_sends_open_file_without_project_tree() -> None:
     assert "undefined control sequence" in prompt
 
 
+def test_codex_prompt_identifies_the_explicit_line_context() -> None:
+    context = AssistantContext.model_validate({
+        "selected_line": {"path": "sections/intro.tex", "line": 12, "text": "A specific sentence"},
+    })
+    prompt = build_codex_prompt([AssistantMessage(role="user", content="Improve this")], context)
+    assert "FOCUSED LINE: sections/intro.tex:12" in prompt
+    assert "A specific sentence" in prompt
+
+
 def test_assistant_prompt_keeps_latest_message_with_large_history() -> None:
     messages = [
         AssistantMessage(role="user", content=f"old request {index} " + "x" * 20_000)

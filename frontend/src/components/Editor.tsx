@@ -2,8 +2,9 @@ import { useMemo } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { StreamLanguage } from '@codemirror/language'
 import { stex } from '@codemirror/legacy-modes/mode/stex'
-import { EditorView, keymap } from '@codemirror/view'
+import { EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { LoaderCircle, Play, Save } from 'lucide-react'
+import type { SelectedLine } from '../types'
 
 type Props = {
   path: string | null
@@ -13,6 +14,7 @@ type Props = {
   compilationRootBusy: boolean
   onChange: (value: string) => void
   onSelection: (value: string) => void
+  onLineContext: (line: SelectedLine) => void
   onSaveAndCompile: () => void
   onCompileView: () => void
 }
@@ -25,6 +27,7 @@ export function Editor({
   compilationRootBusy,
   onChange,
   onSelection,
+  onLineContext,
   onSaveAndCompile,
   onCompileView,
 }: Props) {
@@ -33,6 +36,18 @@ export function Editor({
     () => [
       StreamLanguage.define(stex),
       EditorView.lineWrapping,
+      lineNumbers({
+        domEventHandlers: {
+          mousedown: (view, block, event) => {
+            if (!(event instanceof MouseEvent) || event.button !== 0 || !path) return false
+            event.preventDefault()
+            const line = view.state.doc.lineAt(block.from)
+            onLineContext({ path, line: line.number, text: line.text })
+            view.dispatch({ selection: { anchor: line.from, head: line.to } })
+            return true
+          },
+        },
+      }),
       EditorView.contentAttributes.of({
         'aria-label': path ? `Manuscript editor: ${path}` : 'Manuscript editor',
         spellcheck: 'true',
@@ -54,7 +69,7 @@ export function Editor({
         },
       ]),
     ],
-    [onSaveAndCompile, onSelection, path],
+    [onSaveAndCompile, onSelection, onLineContext, path],
   )
 
   return (
@@ -97,7 +112,7 @@ export function Editor({
             extensions={extensions}
             onChange={onChange}
             basicSetup={{
-              lineNumbers: true,
+              lineNumbers: false,
               foldGutter: true,
               highlightActiveLine: true,
               highlightSelectionMatches: true,

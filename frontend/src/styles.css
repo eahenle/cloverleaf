@@ -107,6 +107,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .preview-body { background: #262b28; }
 .pdf-scroll { height: 100%; overflow: auto; padding: 14px; background: #262b28; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.pdf-page-container { position: relative; flex: 0 0 auto; max-width: 100%; }
+.pdf-link { position: absolute; cursor: pointer; outline: 1px solid #4c7659; }
+.pdf-link:hover, .pdf-link:focus-visible { background: #74c98c26; }
+.cm-lineNumbers .cm-gutterElement { cursor: pointer; }
 .pdf-page { display: block; max-width: 100%; height: auto; box-shadow: 0 3px 14px #0009; background: white; }
 .preview-message.error { color: var(--danger); background: #211717e6; pointer-events: auto; }
 .preview-pages { color: var(--muted); font-weight: 500; letter-spacing: 0; text-transform: lowercase; }
@@ -161,12 +165,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .proposed-edit button:hover { color: #fff; }
 .chat-input { flex: 0 0 auto; margin: 8px; border: 1px solid #344039; background: var(--panel-deep); border-radius: 5px; display: flex; flex-wrap: wrap; align-items: flex-end; padding: 4px; }
 .chat-input:focus-within { border-color: #4c7659; }
-.chat-input textarea { flex: 1; min-width: 0; resize: vertical; min-height: 42px; max-height: 120px; border: 0; outline: 0; padding: 6px; color: #d9dfda; background: transparent; font-size: 12px; line-height: 1.4; }
+.chat-input textarea { flex: 1 0 100%; min-width: 0; resize: vertical; min-height: 42px; max-height: 120px; border: 0; outline: 0; padding: 6px; color: #d9dfda; background: transparent; font-size: 12px; line-height: 1.4; }
 .chat-input button { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 4px; color: #0e110f; background: var(--accent); margin: 0 1px 1px 3px; }
 .assistant-attachments { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 4px; padding: 2px; }
 .assistant-attachments span { align-items: center; background: #253029; border: 1px solid var(--border); border-radius: 12px; display: inline-flex; font-size: 11px; gap: 3px; max-width: 100%; overflow-wrap: anywhere; padding: 2px 6px; }
 .assistant-attachments button { background: transparent; border: 0; color: inherit; display: inline-flex; height: auto; margin: 0; padding: 0; width: auto; }
-.attach-picker { align-items: center; color: var(--muted); display: flex; gap: 2px; padding: 0 3px; }
+.attach-picker { flex: 1; align-items: center; color: var(--muted); display: flex; gap: 2px; padding: 0 3px; }
 .attach-picker select { background: transparent; border: 0; color: var(--muted); font-size: 11px; max-width: 105px; }
 .sr-only { clip: rect(0, 0, 0, 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
 

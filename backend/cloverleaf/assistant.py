@@ -192,6 +192,11 @@ def build_codex_prompt(
         if can_inspect_workspace
         else "No project tools or serialized project tree are available for this request."
     )
+    focused_line = (
+        f"{context.selected_line.path}:{context.selected_line.line}\n"
+        + _truncate_middle(context.selected_line.text, SELECTED_TEXT_MAX_CHARS, "focused line")
+        if context.selected_line else "(none)"
+    )
     before_attachments = (
         f"RUNTIME ACCESS: {runtime_guidance}\n"
         f"WORKSPACE ROOT: {workspace_root or '(not available)'}\n"
@@ -200,6 +205,7 @@ def build_codex_prompt(
         f"OPEN FILE: {context.open_file or '(none)'}\n"
         f"OPEN FILE CONTENT:\n{open_file_content}\n\n"
         f"SELECTED TEXT:\n{selected_text}\n\n"
+        f"FOCUSED LINE: {focused_line}\n\n"
         "ATTACHED FILES:\n"
     )
     after_attachments = (
