@@ -112,3 +112,7 @@ export type SystemStatus = {
   checked_at: string
   services: ServiceStatus[]
 }
+
+
+export type SourceLocation = { path: string; line: number; column: number }
+export type PdfSourcePoint = { page: number; x: number; y: number; revision: number }

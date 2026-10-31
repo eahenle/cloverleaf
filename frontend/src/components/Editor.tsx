@@ -1,10 +1,10 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { StreamLanguage } from '@codemirror/language'
 import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { LoaderCircle, Play, Save } from 'lucide-react'
-import type { SelectedLine } from '../types'
+import type { SelectedLine, SourceLocation } from '../types'
 
 type Props = {
   path: string | null
@@ -12,6 +12,7 @@ type Props = {
   saveState: string
   isCompilationRoot: boolean
   compilationRootBusy: boolean
+  sourceLocation: (SourceLocation & { id: number }) | null
   onChange: (value: string) => void
   onSelection: (value: string) => void
   onLineContext: (line: SelectedLine) => void
@@ -25,12 +26,25 @@ export function Editor({
   saveState,
   isCompilationRoot,
   compilationRootBusy,
+  sourceLocation,
   onChange,
   onSelection,
   onLineContext,
   onSaveAndCompile,
   onCompileView,
 }: Props) {
+  const [editorView, setEditorView] = useState<EditorView | null>(null)
+  useEffect(() => {
+    const view = editorView
+    if (!view || !view.dom.isConnected || !sourceLocation || sourceLocation.path !== path) return
+    const line = view.state.doc.line(Math.min(sourceLocation.line, view.state.doc.lines))
+    const position = line.from + Math.min(sourceLocation.column, line.length)
+    view.dispatch({
+      selection: { anchor: position },
+      effects: EditorView.scrollIntoView(position, { y: 'center' }),
+    })
+    view.focus()
+  }, [editorView, sourceLocation, path, value])
   const canCompileView = Boolean(path && /\.tex$/i.test(path) && !isCompilationRoot)
   const extensions = useMemo(
     () => [
@@ -106,11 +120,13 @@ export function Editor({
       <div className="panel-body">
         {path ? (
           <CodeMirror
+            key={path}
             className="source-editor"
             value={value}
             height="100%"
             extensions={extensions}
             onChange={onChange}
+            onCreateEditor={view => setEditorView(view)}
             basicSetup={{
               lineNumbers: false,
               foldGutter: true,

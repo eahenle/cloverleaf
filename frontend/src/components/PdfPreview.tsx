@@ -7,7 +7,7 @@ import {
   type RenderTask,
 } from 'pdfjs-dist'
 import workerSource from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import type { CompileStatus } from '../types'
+import type { CompileStatus, PdfSourcePoint } from '../types'
 
 GlobalWorkerOptions.workerSrc = workerSource
 
@@ -26,12 +26,13 @@ type PdfPageProps = {
   document: PDFDocumentProxy
   pageNumber: number
   width: number
+  onLocate: (page: number, x: number, y: number) => void
   onNavigate: (destination: PdfDestination) => void
   onRendered: () => void
   onError: (message: string) => void
 }
 
-function PdfPage({ document, pageNumber, width, onNavigate, onRendered, onError }: PdfPageProps) {
+function PdfPage({ document, pageNumber, width, onLocate, onNavigate, onRendered, onError }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [links, setLinks] = useState<PdfLink[]>([])
 
@@ -96,8 +97,23 @@ function PdfPage({ document, pageNumber, width, onNavigate, onRendered, onError 
   }, [document, onError, onRendered, pageNumber, width])
 
   return (
-    <div className="pdf-page-container" data-page-number={pageNumber}>
-      <canvas ref={canvasRef} className="pdf-page" data-testid="pdf-page" aria-label={`PDF page ${pageNumber}`} />
+    <div
+      className="pdf-page-container"
+      data-page-number={pageNumber}
+      onDoubleClick={event => {
+        if (event.target instanceof Element && event.target.closest('a')) return
+        const rect = canvasRef.current?.getBoundingClientRect()
+        if (!rect || !rect.width || !rect.height) return
+        const relativeX = (event.clientX - rect.left) / rect.width
+        const relativeY = (event.clientY - rect.top) / rect.height
+        void document.getPage(pageNumber).then(page => {
+          const viewport = page.getViewport({ scale: 1 })
+          const [x, bottomY] = viewport.convertToPdfPoint(relativeX * viewport.width, relativeY * viewport.height)
+          onLocate(pageNumber, Math.max(0, x), Math.max(0, page.view[3] - bottomY))
+        }).catch(reason => onError(reason instanceof Error ? reason.message : String(reason)))
+      }}
+    >
+      <canvas ref={canvasRef} className="pdf-page" data-testid="pdf-page" aria-label={`PDF page ${pageNumber}`} title="Double-click to locate this point in the source" />
       {links.map(link => (
         <a
           key={link.id}
@@ -138,10 +154,11 @@ type Props = {
   status: CompileStatus
   projectKey: string | null
   mainFile: string | null
+  onLocateSource: (point: PdfSourcePoint, projectKey: string) => void
   onError: (reason: unknown) => void
 }
 
-export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
+export function PdfPreview({ status, projectKey, mainFile, onLocateSource, onError }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef<PDFDocumentProxy | null>(null)
   const loadedRevisionRef = useRef(0)
@@ -152,6 +169,7 @@ export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
     document: PDFDocumentProxy
     revision: number
     data: ArrayBuffer
+    projectKey: string | null
   } | null>(null)
   const [width, setWidth] = useState(320)
   const [loading, setLoading] = useState(false)
@@ -216,7 +234,7 @@ export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
         const previous = documentRef.current
         documentRef.current = nextDocument
         loadedRevisionRef.current = status.revision
-        setLoaded({ document: nextDocument, revision: status.revision, data })
+        setLoaded({ document: nextDocument, revision: status.revision, data, projectKey })
         if (previous) void previous.destroy()
       })
       .catch((reason: unknown) => {
@@ -228,7 +246,7 @@ export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
     return () => {
       cancelled = true
     }
-  }, [status.revision, status.state])
+  }, [projectKey, status.revision, status.state])
 
   useEffect(
     () => () => {
@@ -347,6 +365,9 @@ export function PdfPreview({ status, projectKey, mainFile, onError }: Props) {
                 document={loaded.document}
                 pageNumber={pageNumber}
                 width={width}
+                onLocate={(page, x, y) => {
+                  if (loaded.projectKey) onLocateSource({ page, x, y, revision: loaded.revision }, loaded.projectKey)
+                }}
                 onNavigate={navigateToDestination}
                 onRendered={() => onPageRendered(pageNumber)}
                 onError={setError}

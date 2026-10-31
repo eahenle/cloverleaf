@@ -39,6 +39,8 @@ from .models import (
     ProjectInfo,
     ProjectAssistantHistory,
     ProposedEdit,
+    PdfSourceRequest,
+    SourceLocation,
     RepositoryInfo,
     RenameEntry,
     SelectCompilationRoot,
@@ -824,6 +826,32 @@ def create_app(
     @application.get("/api/compile/status")
     async def compile_status():
         return application.state.compiler.status
+
+    @application.post("/api/pdf/source", response_model=SourceLocation)
+    async def pdf_source(body: PdfSourceRequest):
+        async with application.state.project_lock:
+            fs = application.state.workspace
+            compiler = application.state.compiler
+            if (
+                body.workspace != str(fs.root) or body.main_file != compiler.main_file
+                or body.revision != compiler.status.revision or compiler.status.state != "success"
+            ):
+                raise HTTPException(status_code=409, detail="The preview changed; wait for a successful compile and try again")
+            try:
+                source, line, column = await compiler.source_location(body.page, body.x, body.y)
+                if compiler.status.state != "success" or compiler.status.revision != body.revision:
+                    raise HTTPException(status_code=409, detail="The preview changed during source lookup; try again after compilation")
+                target, relative = fs.resolve_assistant_path(source)
+                fs.resolve(relative, must_exist=True)
+                if not target.is_file():
+                    raise ValueError("The mapped source is not a file")
+                return SourceLocation(path=relative, line=line, column=column)
+            except WorkspaceBoundaryError as exc:
+                raise HTTPException(status_code=400, detail="The mapped source is outside the active project") from exc
+            except (FileNotFoundError, OSError, TimeoutError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc) or "Source lookup timed out") from exc
+            except (ValueError, WorkspaceError) as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @application.get("/api/pdf")
     async def pdf():

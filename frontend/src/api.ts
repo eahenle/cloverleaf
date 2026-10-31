@@ -10,6 +10,8 @@ import type {
   ProjectAssistantHistory,
   RuntimeInfo,
   SystemStatus,
+  SourceLocation,
+  PdfSourcePoint,
   TreeNode,
 } from './types'
 
@@ -242,6 +244,12 @@ export const api = {
       body: JSON.stringify({ edits }),
     }),
   compile: () => request<CompileStatus>('/api/compile', { method: 'POST' }),
+  pdfSource: (point: PdfSourcePoint, workspace: string, mainFile: string) =>
+    request<SourceLocation>('/api/pdf/source', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...point, workspace, main_file: mainFile }),
+    }),
   compileStatus: () => request<CompileStatus>('/api/compile/status'),
   chat: (
     messages: ChatMessage[],
