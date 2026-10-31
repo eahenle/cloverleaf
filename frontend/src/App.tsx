@@ -7,7 +7,7 @@ import { FileTree } from './components/FileTree'
 import { PdfPreview } from './components/PdfPreview'
 import { ProjectPicker } from './components/ProjectPicker'
 import { ProjectStatus } from './components/ProjectStatus'
-import type { AssistantProgress, ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, SelectedLine, TreeNode } from './types'
+import type { AssistantProgress, ChatMessage, CompileStatus, ProjectInfo, ProposedEdit, SelectedLine, SourceLocation, PdfSourcePoint, TreeNode } from './types'
 
 const initialStatus: CompileStatus = {
   state: 'idle',
@@ -43,6 +43,8 @@ export default function App() {
   const [content, setContent] = useState('')
   const [selectedText, setSelectedText] = useState('')
   const [selectedLine, setSelectedLine] = useState<SelectedLine | null>(null)
+  const [sourceLocation, setSourceLocation] = useState<(SourceLocation & { id: number }) | null>(null)
+  const sourceLookupId = useRef(0)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editIntent, setEditIntent] = useState<EditIntent | null>(null)
@@ -126,11 +128,13 @@ export default function App() {
   }, [replaceAssistantReview, replaceDismissedEditKeys, replaceMessages])
 
   const updatePath = useCallback((nextPath: string | null) => {
+    setSourceLocation(null)
     pathRef.current = nextPath
     setPath(nextPath)
   }, [])
 
   const updateContent = useCallback((nextContent: string) => {
+    setSourceLocation(null)
     contentRef.current = nextContent
     setContent(nextContent)
   }, [])
@@ -209,11 +213,14 @@ export default function App() {
     return operation
   }, [updateDirty])
 
-  const openFile = useCallback(async (nextPath: string) => {
+  const openFile = useCallback(async (nextPath: string, isCurrent?: () => boolean) => {
+    if (!isCurrent) sourceLookupId.current += 1
     if (pathRef.current === nextPath) return
     if (dirtyRef.current) await saveCurrent(true)
+    if (isCurrent && !isCurrent()) return
     setEditIntent(null)
     const file = await api.read(nextPath)
+    if (isCurrent && !isCurrent()) return
     fileVersionRef.current = file.version ?? null
     syncedContentRef.current = file.content
     externalWarningVersionRef.current = null
@@ -223,6 +230,24 @@ export default function App() {
     setSelectedText('')
     setSelectedLine(null)
   }, [saveCurrent, updateContent, updateDirty, updatePath])
+
+  const locatePdfSource = useCallback((point: PdfSourcePoint, displayedProjectKey: string) => {
+    if (!project || switchingProjectRef.current) return
+    const key = `${project.workspace}:${project.main_file}`
+    if (displayedProjectKey !== key) return
+    const id = ++sourceLookupId.current
+    const isCurrent = () => {
+      const active = assistantContextRef.current.project
+      return id === sourceLookupId.current && !switchingProjectRef.current
+        && active?.workspace === project.workspace && active.main_file === project.main_file
+    }
+    void (async () => {
+      const location = await api.pdfSource(point, project.workspace, project.main_file)
+      if (!isCurrent()) return
+      await openFile(location.path, isCurrent)
+      if (isCurrent()) setSourceLocation({ ...location, id })
+    })().catch(reason => { if (isCurrent()) showError(reason) })
+  }, [openFile, project, showError])
 
   const requestCompile = useCallback(async () => {
     setStatus(await api.compile())
@@ -252,6 +277,7 @@ export default function App() {
   }, [saveCurrent, showError])
 
   const editorChanged = useCallback((value: string) => {
+    sourceLookupId.current += 1
     setSelectedLine(null)
     if (!pathRef.current) return
     updateContent(value)
@@ -676,6 +702,7 @@ export default function App() {
             saveState={saving ? 'saving…' : dirty ? 'modified' : path ? 'saved' : '—'}
             isCompilationRoot={path === project?.main_file}
             compilationRootBusy={compilationRootBusy}
+            sourceLocation={sourceLocation}
             onChange={editorChanged}
             onSelection={setSelectedText}
             onLineContext={setSelectedLine}
@@ -692,6 +719,7 @@ export default function App() {
                 projectKey={project ? `${project.workspace}:${project.main_file}` : null}
                 mainFile={project?.main_file ?? null}
                 onError={showError}
+                onLocateSource={locatePdfSource}
               />
             </Panel>
             <PanelResizeHandle className="resize-handle horizontal" aria-label="Resize preview and assistant panels" />

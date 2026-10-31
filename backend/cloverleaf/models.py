@@ -172,3 +172,18 @@ class AssistantProgress(BaseModel):
     message: str
     activity_count: int = 0
     heartbeat: bool = False
+
+
+class PdfSourceRequest(BaseModel):
+    workspace: str
+    main_file: str
+    revision: int = Field(ge=1)
+    page: int = Field(ge=1)
+    x: float = Field(ge=0, allow_inf_nan=False)
+    y: float = Field(ge=0, allow_inf_nan=False)
+
+
+class SourceLocation(BaseModel):
+    path: str
+    line: int = Field(ge=1)
+    column: int = Field(ge=0)

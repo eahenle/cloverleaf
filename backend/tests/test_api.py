@@ -585,3 +585,68 @@ def test_assistant_turn_defensively_uses_active_workspace(tmp_path: Path) -> Non
         assert response.status_code == 200
         assert response.json()["message"] == f"{workspace.resolve()}: where am I?"
         assert client.app.state.assistant.workspace == str(workspace.resolve())
+
+
+def test_pdf_source_lookup_is_project_scoped_and_rejects_stale_previews(tmp_path: Path) -> None:
+    from cloverleaf.models import CompileStatus
+
+    with make_client(tmp_path) as client:
+        compiler = client.app.state.compiler
+        compiler.status = CompileStatus(state="success", revision=7)
+        source = tmp_path / "workspace" / "main.tex"
+        calls = []
+
+        async def lookup(page: int, x: float, y: float):
+            calls.append((page, x, y))
+            return str(source), 12, 0
+
+        compiler.source_location = lookup
+        body = {"workspace": str(source.parent), "main_file": "main.tex", "revision": 7, "page": 2, "x": 100, "y": 200}
+        response = client.post("/api/pdf/source", json=body)
+        assert response.status_code == 200
+        assert response.json() == {"path": "main.tex", "line": 12, "column": 0}
+        assert calls == [(2, 100, 200)]
+        for change in ({"revision": 6}, {"workspace": "/other"}, {"main_file": "other.tex"}):
+            assert client.post("/api/pdf/source", json={**body, **change}).status_code == 409
+        assert len(calls) == 1
+        compiler.status.state = "compiling"
+        assert client.post("/api/pdf/source", json=body).status_code == 409
+        compiler.status.state = "success"
+        source = tmp_path / "outside.tex"
+        source.write_text("outside", encoding="utf-8")
+        assert client.post("/api/pdf/source", json=body).status_code == 400
+        source = tmp_path / "workspace" / ".git" / "config"
+        assert client.post("/api/pdf/source", json=body).status_code == 400
+        for change in ({"page": 0}, {"x": -1}, {"y": -1}):
+            assert client.post("/api/pdf/source", json={**body, **change}).status_code == 422
+
+
+def test_pdf_source_lookup_reports_missing_mapping(tmp_path: Path) -> None:
+    from cloverleaf.models import CompileStatus
+
+    with make_client(tmp_path) as client:
+        compiler = client.app.state.compiler
+        compiler.status = CompileStatus(state="success", revision=1)
+        body = {"workspace": str(tmp_path / "workspace"), "main_file": "main.tex", "revision": 1, "page": 1, "x": 100, "y": 200}
+        response = client.post("/api/pdf/source", json=body)
+        assert response.status_code == 503
+        assert "SyncTeX" in response.json()["detail"] or "recompile" in response.json()["detail"]
+
+
+def test_source_lookup_discards_a_result_when_compilation_starts(tmp_path: Path) -> None:
+    from cloverleaf.models import CompileStatus
+
+    with make_client(tmp_path) as client:
+        compiler = client.app.state.compiler
+        compiler.status = CompileStatus(state="success", revision=7)
+
+        async def lookup(page: int, x: float, y: float):
+            compiler.status.state = "compiling"
+            return "main.tex", 1, 0
+
+        compiler.source_location = lookup
+        response = client.post("/api/pdf/source", json={
+            "workspace": str(tmp_path / "workspace"), "main_file": "main.tex",
+            "revision": 7, "page": 1, "x": 100, "y": 200,
+        })
+        assert response.status_code == 409

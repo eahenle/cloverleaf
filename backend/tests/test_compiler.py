@@ -107,3 +107,46 @@ async def test_requests_during_compile_are_queued_without_overlap(tmp_path: Path
 
     assert calls == 2
     assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_synctex_maps_pdf_coordinates_to_an_included_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+    import subprocess
+
+    synctex = shutil.which("synctex")
+    if not find_latexmk() or not synctex:
+        pytest.skip("TeX tools unavailable")
+    nested = tmp_path / "paper"
+    nested.mkdir()
+    included = nested / "body.tex"
+    included.write_text("First paragraph.\n\nA distinctive source sentence.\n", encoding="utf-8")
+    (nested / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\input{body}\n\\end{document}\n",
+        encoding="utf-8",
+    )
+    compiler = Compiler(tmp_path, "paper/main.tex")
+    assert (await compiler.wait()).state == "success"
+    assert (nested / "main.synctex.gz").exists()
+    (nested / "main.synctex.gz").unlink()
+    assert (await compiler.wait()).state == "success"
+    assert (nested / "main.synctex.gz").exists()
+    output = subprocess.run(
+        [synctex, "view", "-i", f"3:0:{included}", "-o", str(compiler.pdf_path)],
+        cwd=tmp_path, capture_output=True, text=True, check=True,
+    ).stdout
+    values = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
+    marker = tmp_path / "external-editor-was-launched"
+    monkeypatch.setenv("SYNCTEX_EDITOR", f"touch {marker}")
+    location = await compiler.source_location(int(values["Page"]), float(values["x"]), float(values["y"]))
+    assert Path(location[0]).resolve() == included.resolve()
+    assert abs(location[1] - 3) <= 1
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_source_lookup_reports_missing_synctex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cloverleaf.compiler.shutil.which", lambda _name: None)
+    monkeypatch.setattr("cloverleaf.compiler.find_latexmk", lambda: None)
+    with pytest.raises(FileNotFoundError, match="SyncTeX is unavailable"):
+        await Compiler(tmp_path, "main.tex").source_location(1, 100, 200)

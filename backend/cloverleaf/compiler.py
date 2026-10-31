@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 from pathlib import Path
@@ -167,6 +168,51 @@ class Compiler:
                     revision=revision,
                 )
 
+    async def source_location(self, page: int, x: float, y: float) -> tuple[str, int, int]:
+        async with self._lock:
+            return await self._source_location(page, x, y)
+
+    async def _source_location(self, page: int, x: float, y: float) -> tuple[str, int, int]:
+        executable = shutil.which("synctex")
+        if executable is None:
+            latexmk = find_latexmk()
+            sibling = Path(latexmk).with_name("synctex") if latexmk else None
+            executable = str(sibling) if sibling and sibling.is_file() else None
+        if executable is None:
+            raise FileNotFoundError("SyncTeX is unavailable; install the TeX synctex utility")
+        if not self.pdf_path.with_suffix(".synctex.gz").exists() and not self.pdf_path.with_suffix(".synctex").exists():
+            raise FileNotFoundError("Source mapping is unavailable; recompile the manuscript first")
+        environment = os.environ.copy()
+        environment.pop("SYNCTEX_EDITOR", None)
+        process = await asyncio.create_subprocess_exec(
+            executable, "edit", "-o", f"{page}:{x}:{y}:{self.pdf_path}",
+            cwd=self.workspace, env=environment,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+        except (TimeoutError, asyncio.CancelledError):
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
+            raise
+        result: dict[str, str] = {}
+        for line in stdout.decode("utf-8", errors="replace").splitlines():
+            if line == "SyncTeX result begin":
+                result = {}
+            elif line == "SyncTeX result end":
+                try:
+                    source_line = int(result["Line"])
+                    column = max(0, int(result.get("Column", "0")))
+                    if source_line > 0 and result.get("Input"):
+                        return result["Input"], source_line, column
+                except (ValueError, KeyError):
+                    pass
+            elif ":" in line:
+                key, value = line.split(":", 1)
+                result[key] = value
+        raise ValueError("No source location was found near this point")
+
     @property
     def pdf_path(self) -> Path:
         return self.workspace / Path(self.main_file).with_suffix(".pdf")
@@ -175,10 +221,15 @@ class Compiler:
     def latexmk_arguments(self) -> tuple[str, ...]:
         arguments = [
             "-pdf",
+            "-synctex=1",
             "-interaction=nonstopmode",
             "-halt-on-error",
             "-file-line-error",
         ]
+        if (self.pdf_path.exists()
+                and not self.pdf_path.with_suffix(".synctex.gz").exists()
+                and not self.pdf_path.with_suffix(".synctex").exists()):
+            arguments.append("-g")
         output_directory = Path(self.main_file).parent
         if output_directory != Path("."):
             arguments.append(f"-output-directory={output_directory.as_posix()}")
