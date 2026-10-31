@@ -754,9 +754,27 @@ class SlowProgressProvider(AssistantProvider):
         return await self.chat(messages, context)
 
 
+@pytest.mark.parametrize("legacy_timeout", [False, True], ids=["native", "pre-311-timeout"])
 def test_assistant_progress_socket_reports_phases_and_heartbeats(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, legacy_timeout: bool
 ) -> None:
+    if legacy_timeout:
+        # Python <=3.10 has an asyncio timeout distinct from built-in TimeoutError.
+        # Keep real queue waits/cancellation; translate only the expired deadline.
+        class LegacyTimeoutError(Exception):
+            pass
+
+        async def legacy_wait_for(awaitable, timeout):
+            try:
+                return await asyncio.wait_for(awaitable, timeout)
+            except asyncio.TimeoutError as exc:
+                raise LegacyTimeoutError from exc
+
+        legacy_asyncio = SimpleNamespace(**vars(asyncio))
+        legacy_asyncio.TimeoutError = LegacyTimeoutError
+        legacy_asyncio.wait_for = legacy_wait_for
+        monkeypatch.setattr("cloverleaf.main.asyncio", legacy_asyncio)
+
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "main.tex").write_text("manuscript", encoding="utf-8")
@@ -780,6 +798,8 @@ def test_assistant_progress_socket_reports_phases_and_heartbeats(
                     events.append(socket.receive_json())
                 except WebSocketDisconnect:
                     break
+
+        assert client.app.state.assistant_progress == {}
 
     assert response.status_code == 200
     assert response.json()["message"] == "stream complete"
