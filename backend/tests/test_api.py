@@ -1,6 +1,11 @@
+import asyncio
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from fastapi.testclient import TestClient
 
@@ -650,3 +655,65 @@ def test_source_lookup_discards_a_result_when_compilation_starts(tmp_path: Path)
             "revision": 7, "page": 1, "x": 100, "y": 200,
         })
         assert response.status_code == 409
+
+
+@pytest.mark.parametrize("legacy_timeout", [False, True], ids=["native", "pre-311-timeout"])
+@pytest.mark.parametrize("stream", ["logs", "file"])
+def test_stream_delivers_changes_after_idle_timeout(tmp_path: Path, monkeypatch, stream, legacy_timeout):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "main.tex"
+    source.write_text("initial", encoding="utf-8")
+    log = tmp_path / "server.log"
+    log.write_text("initial\n", encoding="utf-8")
+    target = log if stream == "logs" else source
+
+    class LegacyTimeoutError(Exception):
+        pass
+
+    expired = False
+
+    async def wait_for_idle(awaitable, timeout):
+        nonlocal expired
+        try:
+            # Exercise a real cancelled receive, not a fabricated timeout result.
+            return await asyncio.wait_for(awaitable, min(timeout, 0.01))
+        except asyncio.TimeoutError as exc:
+            if not expired:
+                expired = True
+                if stream == "logs":
+                    with target.open("a", encoding="utf-8") as handle:
+                        handle.write("after idle\n")
+                else:
+                    target.write_text("after idle", encoding="utf-8")
+            if legacy_timeout:
+                raise LegacyTimeoutError from exc
+            raise
+
+    scoped_asyncio = SimpleNamespace(**vars(asyncio))
+    scoped_asyncio.wait_for = wait_for_idle
+    if legacy_timeout:
+        scoped_asyncio.TimeoutError = LegacyTimeoutError
+    monkeypatch.setattr("cloverleaf.main.asyncio", scoped_asyncio)
+    settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled",
+                        CLOVERLEAF_RUNTIME_LOG=str(log))
+    endpoint = "/api/runtime/logs" if stream == "logs" else "/api/file-events/main.tex"
+    with TestClient(create_app(settings)) as client:
+        with client.websocket_connect(endpoint) as socket:
+            if stream == "logs":
+                assert socket.receive_text() == "initial\n"
+                assert socket.receive_text() == "after idle\n"
+                # Rotation must still reset the stream position after an idle poll.
+                log.rename(tmp_path / "old.log")
+                log.write_text("rotated\n", encoding="utf-8")
+                socket.send_text("poll")
+                assert socket.receive_text() == "rotated\n"
+            else:
+                assert socket.receive_json()["content"] == "initial"
+                assert socket.receive_json()["content"] == "after idle"
+                source.unlink()
+                socket.send_text("poll")
+                assert socket.receive_json() == {"path": "main.tex", "deleted": True}
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    socket.receive_json()
+                assert closed.value.code == 1000
