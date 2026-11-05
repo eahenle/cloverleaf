@@ -191,7 +191,7 @@ class Compiler:
         )
         try:
             stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-        except (TimeoutError, asyncio.CancelledError):
+        except (asyncio.TimeoutError, asyncio.CancelledError):
             if process.returncode is None:
                 process.kill()
             await process.communicate()

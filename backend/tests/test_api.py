@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -10,12 +11,12 @@ from cloverleaf.main import create_app
 from cloverleaf.models import AssistantContext, AssistantMessage, AssistantResponse
 
 
-def make_client(tmp_path: Path) -> TestClient:
+def make_client(tmp_path: Path, *, raise_server_exceptions: bool = True) -> TestClient:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "main.tex").write_text("hello", encoding="utf-8")
     settings = Settings(CLOVERLEAF_WORKSPACE=workspace, AI_PROVIDER="disabled")
-    return TestClient(create_app(settings))
+    return TestClient(create_app(settings), raise_server_exceptions=raise_server_exceptions)
 
 
 def git_output(root: Path, *args: str) -> str:
@@ -631,6 +632,26 @@ def test_pdf_source_lookup_reports_missing_mapping(tmp_path: Path) -> None:
         response = client.post("/api/pdf/source", json=body)
         assert response.status_code == 503
         assert "SyncTeX" in response.json()["detail"] or "recompile" in response.json()["detail"]
+
+
+def test_pdf_source_lookup_timeout_returns_503(tmp_path: Path) -> None:
+    from cloverleaf.models import CompileStatus
+
+    with make_client(tmp_path, raise_server_exceptions=False) as client:
+        compiler = client.app.state.compiler
+        compiler.status = CompileStatus(state="success", revision=1)
+
+        async def lookup(page: int, x: float, y: float):
+            raise asyncio.TimeoutError
+
+        compiler.source_location = lookup
+        response = client.post("/api/pdf/source", json={
+            "workspace": str(tmp_path / "workspace"), "main_file": "main.tex",
+            "revision": 1, "page": 1, "x": 100, "y": 200,
+        })
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Source lookup timed out"}
 
 
 def test_source_lookup_discards_a_result_when_compilation_starts(tmp_path: Path) -> None:

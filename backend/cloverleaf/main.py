@@ -848,7 +848,7 @@ def create_app(
                 return SourceLocation(path=relative, line=line, column=column)
             except WorkspaceBoundaryError as exc:
                 raise HTTPException(status_code=400, detail="The mapped source is outside the active project") from exc
-            except (FileNotFoundError, OSError, TimeoutError) as exc:
+            except (FileNotFoundError, OSError, asyncio.TimeoutError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc) or "Source lookup timed out") from exc
             except (ValueError, WorkspaceError) as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
