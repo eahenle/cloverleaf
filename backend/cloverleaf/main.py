@@ -946,7 +946,7 @@ def create_app(
                         await socket.close(code=1000)
                         return
                     current = update
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     current = current.model_copy(update={"heartbeat": True})
                 await socket.send_json(current.model_dump())
         except (WebSocketDisconnect, RuntimeError):
