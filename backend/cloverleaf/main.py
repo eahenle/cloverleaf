@@ -361,7 +361,7 @@ def create_app(
                     inode = None
                 try:
                     await asyncio.wait_for(socket.receive_text(), timeout=0.35)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     pass
         except WebSocketDisconnect:
             return
@@ -741,7 +741,7 @@ def create_app(
                     pass
                 try:
                     await asyncio.wait_for(socket.receive_text(), timeout=1)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     pass
         except WebSocketDisconnect:
             return
