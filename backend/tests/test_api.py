@@ -737,3 +737,23 @@ def test_stream_delivers_changes_after_idle_timeout(tmp_path: Path, monkeypatch,
                 with pytest.raises(WebSocketDisconnect) as closed:
                     socket.receive_json()
                 assert closed.value.code == 1000
+
+
+@pytest.mark.parametrize("operation", ["write", "apply_edits"])
+def test_file_api_saves_crlf_source_with_read_version(tmp_path: Path, operation: str) -> None:
+    with make_client(tmp_path) as client:
+        target = tmp_path / "workspace" / "main.tex"
+        target.write_bytes(b"first\r\nsecond\r\n")
+        opened = client.get("/api/files/main.tex").json()
+        assert opened["content"] == "first\nsecond\n"
+        edited = {**opened, "content": "revised\n"}
+        if operation == "write":
+            response = client.put("/api/files/main.tex", json=edited)
+            assert response.status_code == 200, response.text
+            saved = response.json()
+        else:
+            response = client.post("/api/files/apply", json={"edits": [{**edited, "is_new": False}]})
+            assert response.status_code == 200, response.text
+            [saved] = response.json()["files"]
+        assert client.get("/api/files/main.tex").json() == saved
+        assert client.put("/api/files/main.tex", json={**saved, "content": "again\n"}).status_code == 200

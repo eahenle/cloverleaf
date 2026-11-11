@@ -315,3 +315,71 @@ def test_bounded_versioned_read_retries_changes_without_returning_partial_versio
             "new", hashlib.sha256(b"new").hexdigest()
         )
     assert reads == [4, 4]
+
+
+@pytest.mark.parametrize("newline", [b"\r\n", b"\r"], ids=["crlf", "cr"])
+@pytest.mark.parametrize("bounded", [False, True], ids=["unbounded", "bounded"])
+@pytest.mark.parametrize("operation", ["write", "apply_edits"])
+def test_unchanged_newline_file_can_be_saved(
+    tmp_path: Path, newline: bytes, bounded: bool, operation: str,
+) -> None:
+    raw = newline.join([b"first", b"second", b""])
+    target = tmp_path / "main.tex"
+    target.write_bytes(raw)
+    workspace = Workspace(tmp_path)
+    content, version = workspace.read_versioned("main.tex", **({"max_bytes": len(raw)} if bounded else {}))
+    assert content == "first\nsecond\n"
+    updated = content + "edited\n"
+    if operation == "write":
+        next_version = workspace.write("main.tex", updated, expected_version=version)
+    else:
+        [(path, applied, next_version)] = workspace.apply_edits([("main.tex", updated, version, False)])
+        assert (path, applied) == ("main.tex", updated)
+    assert workspace.read_versioned("main.tex") == (updated, next_version)
+    assert workspace.write("main.tex", updated + "again\n", expected_version=next_version)
+
+
+@pytest.mark.parametrize("operation", ["write", "apply_edits"])
+def test_newline_only_external_change_is_detected(tmp_path: Path, operation: str) -> None:
+    target = tmp_path / "main.tex"
+    target.write_bytes(b"first\nsecond\n")
+    workspace = Workspace(tmp_path)
+    content, version = workspace.read_versioned("main.tex")
+    external = b"first\r\nsecond\r\n"
+    target.write_bytes(external)
+    with pytest.raises(FileChangedError):
+        if operation == "write":
+            workspace.write("main.tex", content + "edit", expected_version=version)
+        else:
+            workspace.apply_edits([("main.tex", content + "edit", version, False)])
+    assert target.read_bytes() == external
+
+
+@pytest.mark.parametrize("operation", ["write", "apply_edits"])
+@pytest.mark.parametrize("content", ["first\nsecond\n", "first\r\nsecond\r\n"])
+def test_written_versions_match_platform_newline_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, content: str,
+) -> None:
+    # Exercise the real text writer's Windows translation on every test platform.
+    monkeypatch.setattr(os, "linesep", "\r\n")
+    original_open = Path.open
+
+    def windows_open(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        if mode == "w" and newline is None:
+            newline = "\r\n"
+        return original_open(path, mode, buffering, encoding, errors, newline)
+
+    monkeypatch.setattr(Path, "open", windows_open)
+    workspace = Workspace(tmp_path)
+    if operation == "write":
+        version = workspace.write("main.tex", content)
+    else:
+        [(_, _, version)] = workspace.apply_edits([("main.tex", content, None, True)])
+    expected_bytes = (
+        b"first\r\nsecond\r\n" if content == "first\nsecond\n"
+        else b"first\r\r\nsecond\r\r\n"
+    )
+    assert (tmp_path / "main.tex").read_bytes() == expected_bytes
+    assert version == hashlib.sha256(expected_bytes).hexdigest()
+    assert workspace.read_versioned("main.tex")[1] == version
+    workspace.write("main.tex", "next\n", expected_version=version)
