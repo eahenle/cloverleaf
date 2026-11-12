@@ -32,6 +32,24 @@ def git_output(root: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def test_reviewed_edit_api_rejects_aliases_without_writes_or_checkpoint(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        root = tmp_path / "workspace"
+        original_head = git_output(root, "rev-parse", "HEAD")
+        opened = client.get("/api/files/main.tex").json()
+        response = client.post("/api/files/apply", json={"edits": [
+            {"path": "new.tex", "content": "must not be created", "is_new": True},
+            {**opened, "content": "first edit", "is_new": False},
+            {**opened, "path": "%6dain.tex", "content": "second edit", "is_new": False},
+        ]})
+
+        assert response.status_code == 400, response.text
+        assert "unique" in response.json()["detail"]
+        assert client.get("/api/files/main.tex").json() == opened
+        assert not (root / "new.tex").exists()
+        assert git_output(root, "rev-parse", "HEAD") == original_head
+
+
 def test_file_api_lifecycle(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         assert client.get("/api/files/main.tex").json()["content"] == "hello"
@@ -737,3 +755,23 @@ def test_stream_delivers_changes_after_idle_timeout(tmp_path: Path, monkeypatch,
                 with pytest.raises(WebSocketDisconnect) as closed:
                     socket.receive_json()
                 assert closed.value.code == 1000
+
+
+@pytest.mark.parametrize("operation", ["write", "apply_edits"])
+def test_file_api_saves_crlf_source_with_read_version(tmp_path: Path, operation: str) -> None:
+    with make_client(tmp_path) as client:
+        target = tmp_path / "workspace" / "main.tex"
+        target.write_bytes(b"first\r\nsecond\r\n")
+        opened = client.get("/api/files/main.tex").json()
+        assert opened["content"] == "first\nsecond\n"
+        edited = {**opened, "content": "revised\n"}
+        if operation == "write":
+            response = client.put("/api/files/main.tex", json=edited)
+            assert response.status_code == 200, response.text
+            saved = response.json()
+        else:
+            response = client.post("/api/files/apply", json={"edits": [{**edited, "is_new": False}]})
+            assert response.status_code == 200, response.text
+            [saved] = response.json()["files"]
+        assert client.get("/api/files/main.tex").json() == saved
+        assert client.put("/api/files/main.tex", json={**saved, "content": "again\n"}).status_code == 200
