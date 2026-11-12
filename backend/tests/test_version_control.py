@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from cloverleaf.version_control import LocalGitRepository
 
 
@@ -85,3 +87,30 @@ def test_existing_cloverleaf_excludes_are_upgraded_for_project_state(tmp_path: P
     LocalGitRepository(root).initialize()
 
     assert ".cloverleaf/" in exclude_path.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.parametrize(
+    ("filename", "other"),
+    [("chapter*.tex", "chapter1.tex"), ("chapter[1].tex", "chapter1.tex"),
+     (":(glob)*.tex", "chapter1.tex")],
+)
+def test_checkpoint_treats_filename_literally(
+    tmp_path: Path, filename: str, other: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    for name in (filename, other, "notes.txt"):
+        (root / name).write_text("original", encoding="utf-8")
+    repository = LocalGitRepository(root)
+    assert repository.initialize().initialized
+    (root / "notes.txt").write_text("staged notes", encoding="utf-8")
+    git(root, "add", "notes.txt")
+    (root / other).write_text("unrelated edit", encoding="utf-8")
+    (root / filename).write_text("checkpointed", encoding="utf-8")
+
+    assert repository.checkpoint([filename], "Literal filename")
+    assert git(root, "show", f"HEAD:{filename}") == "checkpointed"
+    assert git(root, "show", f"HEAD:{other}") == "original"
+    assert git(root, "show", "HEAD:notes.txt") == "original"
+    assert git(root, "diff", "--cached", "--name-only") == "notes.txt"
+    assert git(root, "diff", "--name-only") == other

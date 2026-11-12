@@ -124,7 +124,9 @@ class LocalGitRepository:
                     for part in pure.parts
                 ):
                     raise ValueError("checkpoint paths must be relative project paths")
-                pathspec = pure.as_posix()
+                # `--` stops option parsing, not Git pathspec expansion.
+                # User filenames must stay literal for add, diff, and commit.
+                pathspec = f":(literal){pure.as_posix()}"
             if pathspec not in pathspecs:
                 pathspecs.append(pathspec)
         return pathspecs
