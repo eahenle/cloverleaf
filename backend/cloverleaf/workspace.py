@@ -144,7 +144,7 @@ class Workspace:
             for _attempt in range(2):
                 before = target.stat()
                 if max_bytes is None:
-                    content = target.read_text(encoding="utf-8")
+                    raw = target.read_bytes()
                 else:
                     if before.st_size > max_bytes:
                         raise WorkspaceError(f"{path} exceeds the {max_bytes:,}-byte limit")
@@ -153,14 +153,20 @@ class Workspace:
                         raw = source.read(max_bytes + 1)
                     if len(raw) > max_bytes:
                         raise WorkspaceError(f"{path} exceeds the {max_bytes:,}-byte limit")
-                    # Match read_text's universal newlines and existing version hashes.
-                    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+                # Normalize editor text, but version the original bytes used by writes.
+                content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
                 after = target.stat().st_mtime_ns
                 if before.st_mtime_ns == after:
-                    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    return content, hashlib.sha256(raw).hexdigest()
             raise FileChangedError(f"{path} changed while Cloverleaf was reading it")
         except UnicodeDecodeError as exc:
             raise WorkspaceError("Only UTF-8 text files can be opened") from exc
+
+    @staticmethod
+    def _written_version(content: str) -> str:
+        # Text writes translate LF to the platform separator, including on Windows.
+        raw = content.replace("\n", os.linesep).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
 
     def write(self, path: str, content: str, expected_version: str | None = None) -> str:
         target = self.resolve(path)
@@ -175,8 +181,8 @@ class Workspace:
                     f"{path} changed on disk; Cloverleaf kept the unsaved editor content"
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        target.write_text(content, encoding="utf-8", newline=os.linesep)
+        return self._written_version(content)
 
     def apply_edits(
         self,
@@ -185,12 +191,15 @@ class Workspace:
         """Validate a reviewed edit set, then apply it as one best-effort transaction."""
 
         prepared: list[tuple[str, Path, str, bytes | None]] = []
-        seen: set[str] = set()
+        seen_targets: set[Path] = set()
+        seen_files: set[tuple[int, int]] = set()
         for path, content, expected_version, is_new in edits:
-            if path in seen:
-                raise WorkspaceError("Reviewed edit paths must be unique")
-            seen.add(path)
             target = self.resolve(path)
+            # Path spellings and in-project symlinks can name the same target.
+            resolved_target = target.resolve()
+            if resolved_target in seen_targets:
+                raise WorkspaceError("Reviewed edit targets must be unique")
+            seen_targets.add(resolved_target)
             if is_new:
                 if target.exists():
                     raise FileExistsError(path)
@@ -200,6 +209,12 @@ class Workspace:
                     raise FileNotFoundError(path)
                 if not target.is_file():
                     raise IsADirectoryError(path)
+                # Hard links have different resolved paths but share file bytes.
+                stat = target.stat()
+                identity = (stat.st_dev, stat.st_ino)
+                if identity in seen_files:
+                    raise WorkspaceError("Reviewed edit targets must be unique")
+                seen_files.add(identity)
                 if expected_version is None:
                     raise WorkspaceError("Existing reviewed edits require a file version")
                 original = target.read_bytes()
@@ -218,7 +233,7 @@ class Workspace:
             for _path, target, content, original in prepared:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 written.append((target, original))
-                target.write_text(content, encoding="utf-8")
+                target.write_text(content, encoding="utf-8", newline=os.linesep)
         except Exception:
             for target, original in reversed(written):
                 if original is None:
@@ -228,7 +243,7 @@ class Workspace:
             raise
 
         return [
-            (path, content, hashlib.sha256(content.encode("utf-8")).hexdigest())
+            (path, content, self._written_version(content))
             for path, _target, content, _original in prepared
         ]
 

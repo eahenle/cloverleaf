@@ -210,3 +210,69 @@ def test_project_name_collision_keeps_active_and_persisted_selection(setup_sync,
         assert response.status_code == 409
         assert client.get("/api/project").json()["workspace"] == str(root)
         assert not settings.project_state_path.exists()
+
+
+@pytest.mark.parametrize("obstruction", ["empty-directory", "nonempty-directory"])
+def test_directory_obstruction_rejects_entire_sync_before_writes(setup_sync, obstruction):
+    sync, project, cloud, remote = setup_sync
+    root = project("first")
+    sync.sync_once()
+    git(cloud, "pull", "--ff-only")
+    relative = "z-notes.txt"
+    cloud_target = cloud / "projects/first" / relative
+    cloud_target.parent.mkdir(parents=True, exist_ok=True)
+    cloud_target.write_text("cloud notes")
+    git(cloud, "add", ".")
+    git(cloud, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "Add notes")
+    git(cloud, "push")
+    (root / "a-local.txt").write_text("local addition")
+    obstacle = root / "z-notes.txt"
+    obstacle.mkdir()
+    if obstruction == "nonempty-directory":
+        (obstacle / "private.txt").write_text("keep local contents")
+        (root / ".gitignore").write_text("z-notes.txt/\n")
+    baseline = (sync.state_dir / "state.json").read_bytes()
+
+    sync.sync_once()
+
+    assert sync.last_error
+    assert not (sync.repository / "projects/first/a-local.txt").exists()
+    assert git(sync.repository, "status", "--porcelain") == ""
+    assert (sync.state_dir / "state.json").read_bytes() == baseline
+    assert obstacle.is_dir()
+    if obstruction == "nonempty-directory":
+        assert (obstacle / "private.txt").read_text() == "keep local contents"
+    assert (root / "a-local.txt").read_text() == "local addition"
+
+    if obstruction == "nonempty-directory":
+        (obstacle / "private.txt").rename(root / "saved-local.txt")
+    obstacle.rmdir()
+    sync.sync_once()
+    assert sync.last_error is None
+    assert (root / relative).read_text() == "cloud notes"
+    assert git(remote, "show", "main:projects/first/a-local.txt") == "local addition"
+
+
+def test_cloud_file_to_directory_transition_still_syncs(setup_sync):
+    sync, project, cloud, remote = setup_sync
+    root = project("first")
+    (root / "notes").write_text("old file")
+    sync.sync_once()
+    assert sync.last_error is None
+    git(cloud, "pull", "--ff-only")
+    target = cloud / "projects/first/notes"
+    target.unlink()
+    target.mkdir()
+    (target / "chapter.txt").write_text("new chapter")
+    git(cloud, "add", "-A")
+    git(cloud, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "File to directory")
+    git(cloud, "push")
+
+    sync.sync_once()
+
+    assert sync.last_error is None
+    assert (root / "notes/chapter.txt").read_text() == "new chapter"
+    assert git(sync.repository, "status", "--porcelain") == ""
+    sync.sync_once()
+    assert sync.last_error is None
+    assert (root / "notes/chapter.txt").read_text() == "new chapter"

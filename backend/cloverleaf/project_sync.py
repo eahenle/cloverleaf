@@ -215,6 +215,8 @@ class ProjectSync:
                 # Validate all destinations before changing either side.
                 for root, path, before, after in actions:
                     target = self._target(root, path)
+                    if target.exists() and not target.is_file():
+                        raise RuntimeError(f"Sync destination is not a regular file: {path}")
                     current = target.read_bytes() if target.is_file() else None
                     if current != before:
                         raise RuntimeError(f"File changed during sync; retrying next cycle: {path}")
