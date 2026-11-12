@@ -185,12 +185,15 @@ class Workspace:
         """Validate a reviewed edit set, then apply it as one best-effort transaction."""
 
         prepared: list[tuple[str, Path, str, bytes | None]] = []
-        seen: set[str] = set()
+        seen_targets: set[Path] = set()
+        seen_files: set[tuple[int, int]] = set()
         for path, content, expected_version, is_new in edits:
-            if path in seen:
-                raise WorkspaceError("Reviewed edit paths must be unique")
-            seen.add(path)
             target = self.resolve(path)
+            # Path spellings and in-project symlinks can name the same target.
+            resolved_target = target.resolve()
+            if resolved_target in seen_targets:
+                raise WorkspaceError("Reviewed edit targets must be unique")
+            seen_targets.add(resolved_target)
             if is_new:
                 if target.exists():
                     raise FileExistsError(path)
@@ -200,6 +203,12 @@ class Workspace:
                     raise FileNotFoundError(path)
                 if not target.is_file():
                     raise IsADirectoryError(path)
+                # Hard links have different resolved paths but share file bytes.
+                stat = target.stat()
+                identity = (stat.st_dev, stat.st_ino)
+                if identity in seen_files:
+                    raise WorkspaceError("Reviewed edit targets must be unique")
+                seen_files.add(identity)
                 if expected_version is None:
                     raise WorkspaceError("Existing reviewed edits require a file version")
                 original = target.read_bytes()

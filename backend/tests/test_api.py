@@ -32,6 +32,24 @@ def git_output(root: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def test_reviewed_edit_api_rejects_aliases_without_writes_or_checkpoint(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        root = tmp_path / "workspace"
+        original_head = git_output(root, "rev-parse", "HEAD")
+        opened = client.get("/api/files/main.tex").json()
+        response = client.post("/api/files/apply", json={"edits": [
+            {"path": "new.tex", "content": "must not be created", "is_new": True},
+            {**opened, "content": "first edit", "is_new": False},
+            {**opened, "path": "%6dain.tex", "content": "second edit", "is_new": False},
+        ]})
+
+        assert response.status_code == 400, response.text
+        assert "unique" in response.json()["detail"]
+        assert client.get("/api/files/main.tex").json() == opened
+        assert not (root / "new.tex").exists()
+        assert git_output(root, "rev-parse", "HEAD") == original_head
+
+
 def test_file_api_lifecycle(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         assert client.get("/api/files/main.tex").json()["content"] == "hello"

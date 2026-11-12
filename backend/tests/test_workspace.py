@@ -112,6 +112,60 @@ def test_reviewed_edit_set_changes_nothing_when_one_version_is_stale(tmp_path: P
     assert workspace.read("results.tex") == "human revision"
 
 
+@pytest.mark.parametrize("alias", ["main.tex", "%6dain.tex", "./main.tex"])
+def test_reviewed_edits_reject_duplicate_paths_before_writing(tmp_path: Path, alias: str) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.create("main.tex", "file", "original")
+    _content, version = workspace.read_versioned("main.tex")
+
+    with pytest.raises(WorkspaceError):
+        workspace.apply_edits([
+            ("new.tex", "must not be created", None, True),
+            ("main.tex", "first edit", version, False),
+            (alias, "second edit", version, False),
+        ])
+
+    assert workspace.read("main.tex") == "original"
+    assert not (tmp_path / "new.tex").exists()
+
+
+@pytest.mark.parametrize("link_type", ["symlink", "hardlink"])
+def test_reviewed_edits_reject_linked_targets_before_writing(tmp_path: Path, link_type: str) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.create("main.tex", "file", "original")
+    target = tmp_path / "main.tex"
+    alias = tmp_path / "alias.tex"
+    try:
+        if link_type == "symlink":
+            alias.symlink_to(target)
+        else:
+            alias.hardlink_to(target)
+    except OSError:
+        pytest.skip(f"{link_type} is unavailable on this platform")
+    _content, version = workspace.read_versioned("main.tex")
+
+    with pytest.raises(WorkspaceError, match="unique"):
+        workspace.apply_edits([
+            ("new.tex", "must not be created", None, True),
+            ("main.tex", "first edit", version, False),
+            ("alias.tex", "second edit", version, False),
+        ])
+
+    assert target.read_text(encoding="utf-8") == "original"
+    assert alias.read_text(encoding="utf-8") == "original"
+    assert not (tmp_path / "new.tex").exists()
+
+
+def test_reviewed_new_edits_reject_duplicate_resolved_targets(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    with pytest.raises(WorkspaceError, match="unique"):
+        workspace.apply_edits([
+            ("nested/new.tex", "first edit", None, True),
+            ("nested\\new.tex", "second edit", None, True),
+        ])
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "path",
     [
