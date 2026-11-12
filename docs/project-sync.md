@@ -29,7 +29,10 @@ PDFs with corresponding TeX sources are treated as generated output and excluded
 Local and cloud changes to the same file pause synchronization and preserve both
 versions. View the conflicting paths in **Status → GitHub project sync** or
 `GET /api/projects/sync`. Reconcile the content so the local and cloud versions
-agree, and the next cycle resumes. Network errors retry on the next cycle without
+agree, and the next cycle resumes. A directory occupying a destination filename pauses the cycle before any file
+transfers. Move the obstructing
+local item to a safe location, then let the next cycle retry; Cloverleaf never
+removes its contents automatically. Network errors retry on the next cycle without
 discarding local edits. A diverged shared-clone branch is reported for manual review;
 the service never force-pushes or resets project files.
 
